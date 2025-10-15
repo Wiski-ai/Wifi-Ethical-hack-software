@@ -1,5 +1,7 @@
-# Welcome to GitHub Desktop!
+This software is for Ethical Hacking only 
+Don't use it if you don't have autorisation in the network
+For Ethical purpose only 
+I decline all responsibility in the event of unauthorized attack.
+If you download any of this software you agree to take full responsibility for your actions.
 
-This is your README. READMEs are where you can communicate what your project is and how to use it.
-
-Write your name on line 6, save it, and then head back to GitHub Desktop.
+H8Laws
