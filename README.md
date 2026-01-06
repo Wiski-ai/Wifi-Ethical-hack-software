@@ -135,7 +135,7 @@ This repository uses the MIT license. See `LICENSE` for full text.
 
 ## Reporting a Vulnerability
 
-If you discover a security issue, please send an email to [your-email@example.com](mailto:your-email@example.com) with the subject `Security issue: WiLabAttack`. Include:
+If you discover a security issue, please send an email to [h8l4ws@gmail.com](h8l4ws@gmail.com) with the subject `Security issue: WiLabAttack`. Include:
 
 * A clear description of the issue
 * Steps to reproduce (use `--dry-run` if needed)
