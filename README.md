@@ -22,7 +22,7 @@ The authors and maintainers of this repository **are not liable** for any misuse
 * [Contributing](#contributing)
 * [Reporting Security Issues](#reporting-security-issues)
 * [License](#license)
-
+* [Donate](#Donate)
 ---
 
 ## Purpose
@@ -303,4 +303,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+## Donate
 - You can donate me on paypal h8l4ws@gmail.com
