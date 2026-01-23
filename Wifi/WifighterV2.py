@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""
-WiFighter — Deauth Tool (refactor)
-Refonte pour robustesse, meilleure gestion des processus, parsing CSV plus souple,
-et gestion propre des interruptions.
-
-Note: le mode moniteur utilise uniquement `airmon-ng start` (aucune commande stop/kill automatique),
-conformément à la demande.
-"""
 
 import argparse
 import csv
@@ -44,7 +36,7 @@ def banner() -> None:
   \__/\  / |___||__|  |__\___  /|___|  /__|  \___  >__|   
        \/               /_____/      \/          \/   
 {YELLOW_BOLD}
-            >>> WiFighter — Deauth Tool by H8Laws (refactor) <<<
+            >>> WiFighter V2 — Deauth Tool by H8Laws  <<<
 {RESET}""")
 
 
