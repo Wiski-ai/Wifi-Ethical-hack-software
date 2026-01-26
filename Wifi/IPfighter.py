@@ -103,8 +103,12 @@ def choose_interface(prompt):
 
 def kill_conflicts():
     """Tue les processus conflictuels"""
-    print(f"\n{YELLOW}[*] Arrêt de NetworkManager & wpa_supplicant...{RESET}")
-    subprocess.call("airmon-ng check kill", shell=True, 
+    print(f"\n{YELLOW}[*] Arrêt de wpa_supplicant uniquement (NetworkManager préservé pour garder l'accès internet)...{RESET}")
+    # Ne pas tuer NetworkManager pour garder l'accès internet
+    # subprocess.call("airmon-ng check kill", shell=True, 
+    #                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Au lieu de cela, tuer seulement wpa_supplicant si nécessaire
+    subprocess.call("pkill -f wpa_supplicant", shell=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1)
 
