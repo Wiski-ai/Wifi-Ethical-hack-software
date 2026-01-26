@@ -1,12 +1,10 @@
 # README.md
 
-# WiLabAttack (Example)
+# WiLabAudit (Example)
 
-**IMPORTANT — AUTHORIZED USE ONLY**
+**IMPORTANT — AUTHORIZED USE ONLY (Isolated lab environments only)**
 
-This repository contains tools and scripts intended **only** for legitimate security auditing, research, and educational use in isolated lab environments. You **must** have explicit, written permission from the network or system owner before running any tools in this repository.
-
-The authors and maintainers of this repository **are not liable** for any misuse of the code. By using any code in this repository you agree to assume full responsibility for your actions.
+This repository contains tools and scripts intended **only** for legitimate security auditing, research, and educational use in isolated lab environments. You **must** have explicit, written permission from the owner of any network or system before performing any testing or assessment. The authors and maintainers of this repository **are not liable** for any misuse of the code. By using any code in this repository you agree to assume full responsibility for your actions.
 
 ---
 
@@ -22,12 +20,12 @@ The authors and maintainers of this repository **are not liable** for any misuse
 * [Contributing](#contributing)
 * [Reporting Security Issues](#reporting-security-issues)
 * [License](#license)
-* [Donate](#Donate)
+* [Support](#support)
 ---
 
 ## Purpose
 
-This project provides a toolkit to study Wi‑Fi security techniques and defensive countermeasures. It is intended to be used in controlled, isolated labs (for example with a disposable AP and a dedicated Kali VM). The code may implement scanning, handshake capture, and simulated attack techniques for educational and research use only.
+This project provides a toolkit to study Wi‑Fi security techniques and defensive countermeasures. It is intended to be used in controlled, isolated labs (for example with a disposable AP and a dedicated VM). This project focuses on wireless security assessment, monitoring, and defensive testing.
 
 ---
 
@@ -35,7 +33,7 @@ This project provides a toolkit to study Wi‑Fi security techniques and defensi
 
 You MUST obtain **explicit written authorization** from the owner of any network or system before testing. Unauthorized testing against networks you do not own or have permission to test is illegal in many jurisdictions.
 
-To reduce risk, tools or commands that can cause disruptions are disabled by default or require explicit flags. See `AUTHORIZATION_TEMPLATE.md` for a simple permission form you can use to document authorization.
+To reduce risk, tools or commands that can cause disruptions are disabled by default or require explicit flags and interactive confirmation. See `AUTHORIZATION_TEMPLATE.md` for a simple permission form you can use to document authorization.
 
 ---
 
@@ -49,13 +47,7 @@ To reduce risk, tools or commands that can cause disruptions are disabled by def
    python wilab.py --dry-run
    ```
 
-3. To run intrusive actions you must specify BOTH flags:
-
-   ```bash
-   python wilab.py --i-have-written-permission --target-lab
-   ```
-
-   The tool will then prompt you to type a confirmation phrase (e.g. `I HAVE PERMISSION`) before continuing.
+3. Running operations that may disrupt traffic requires explicit authorization flags and an interactive confirmation phrase. See module documentation (`--help`) and `INSTALL.md` for safe setup and full guidance before enabling disruptive actions.
 
 4. Keep logs local and do not enable any remote log uploads unless you have explicit consent.
 
@@ -63,11 +55,11 @@ To reduce risk, tools or commands that can cause disruptions are disabled by def
 
 ## Usage Examples
 
-* `--dry-run` : simulate actions only (no network frames sent).
-* `--capture-handshake` : capture WPA/WPA2/3 handshake to local file (requires monitor mode and appropriate permissions).
-* `--deauth [--force]` : send deauthentication frames. Requires `--i-have-written-permission` and interactive confirmation; disabled in default builds or in public releases unless `--force` and explicit permission flags present.
+* `--dry-run` : simulate operations only (no network frames sent).
+* `--capture-handshake` : authentication exchange capture (see module documentation / --help).
+* `--deauth [--force]` : controlled disruption testing (see module documentation / --help).
 
-*Examples may vary by script. See the tool's in-file `--help` output for full flags.*
+See module documentation (`--help`) for full flags and behavior. For setup details and device-specific steps refer to `INSTALL.md`.
 
 ---
 
@@ -79,7 +71,7 @@ To minimize misuse the repository includes the following protections and recomme
 * **Interactive confirmation**: Requires typing a human confirmation phrase before any disruptive action.
 * **Explicit permission flags**: `--i-have-written-permission` and `--target-lab` are required to enable risky operations.
 * **No automatic remote logging**: Tools do not phone-home or upload logs by default.
-* **Rate limiting for broadcast frames**: When enabled, burst attacks are slowed to minimize collateral impact.
+* **Rate limiting for broadcast frames**: When enabled, burst operations are slowed to minimize collateral impact.
 * **Environment checks**: Basic heuristics to detect if the machine is connected to a non-isolated network; if detected, disruptive actions are blocked.
 
 These protections are not a substitute for legal authorization. They are intended to reduce accidental misuse and to document responsible use patterns.
@@ -98,7 +90,7 @@ We strongly recommend the following baseline lab setup:
 
 * Host machine (Linux preferred) with virtualization (VirtualBox / VMware / QEMU).
 * Create a Kali Linux VM and take a snapshot before any test.
-* Use a separate USB Wi‑Fi adapter that supports monitor mode and packet injection for testing. Do not use the host's primary Wi‑Fi adapter in managed mode for attacks.
+* Use a separate USB Wi‑Fi adapter that supports monitor mode and packet injection for testing. Do not use the host's primary Wi‑Fi adapter in managed mode for disruption tests.
 * Create a disposable AP using `hostapd` or use a cheap physical router set to factory defaults.
 * Use host-only/NAT or a dedicated VLAN to ensure no traffic leaks to production networks.
 
@@ -123,19 +115,13 @@ If you find a vulnerability in this repository, please responsibly disclose it f
 
 ---
 
-## License
-
-This repository uses the MIT license. See `LICENSE` for full text.
-
----
-
 # SECURITY.md
 
 # Security Policy
 
 ## Reporting a Vulnerability
 
-If you discover a security issue, please send an email to [h8l4ws@gmail.com](h8l4ws@gmail.com) with the subject `Security issue: WiLabAttack`. Include:
+If you discover a security issue, please send an email to [h8l4ws@gmail.com](mailto:h8l4ws@gmail.com) with the subject `Security issue: WiLabAudit`. Include:
 
 * A clear description of the issue
 * Steps to reproduce (use `--dry-run` if needed)
@@ -172,7 +158,7 @@ Tester signature: ______________________    Date: _______________
 
 Notes:
 
-* Keep a signed copy of this form before running any offensive tests.
+* Keep a signed copy of this form before running any tests.
 * If possible, include a copy of this form on-site or accessible via an internal ticketing system.
 
 ---
@@ -246,13 +232,13 @@ This guide walks through a minimal safe lab setup to run the tools in this repos
 
    ```bash
    python wilab.py --i-have-written-permission --target-lab
-   # tool will prompt for confirmation phrase
+   # the tool will require interactive confirmation before continuing; see module documentation / --help
    ```
 
 ## Cleanup
 
 * Restore the VM snapshot or revert the VM after testing.
-* Remove any captured handshake files from shared drives if they contain third‑party network data.
+* Remove any captured files from shared drives if they contain third‑party network data.
 
 ---
 
@@ -305,5 +291,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-## Donate
-- You can donate me on paypal h8l4ws@gmail.com
+## Support
+
+Support options are listed by the maintainer.
