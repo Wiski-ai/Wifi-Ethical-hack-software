@@ -24,7 +24,7 @@ class WifiScanner:
 /____  >\___  >____  /___|  /___|  /\___  >__|   
      \/     \/     \/     \/     \/     \/       
                     
-            Scann Tool by H8Laws
+            Scann Tool by H8Laws v2.5
 {RESET}"""
         print(banner_red)
     
