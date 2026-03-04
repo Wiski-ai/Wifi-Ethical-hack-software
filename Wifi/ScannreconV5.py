@@ -81,7 +81,6 @@ class WiFiAutoScanner:
         if self.monitor_interface:
             subprocess.run(['airmon-ng', 'stop', self.monitor_interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print(f"[+] {self.monitor_interface} revenu en mode normal.")
-            # >>> Ajout demandé : restart NetworkManager
             subprocess.run(['systemctl', 'restart', 'NetworkManager'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("[+] NetworkManager relancé.")
         print("[+] Scan terminé.")
