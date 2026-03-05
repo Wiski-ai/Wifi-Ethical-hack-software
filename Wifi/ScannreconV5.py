@@ -1,120 +1,202 @@
 #!/usr/bin/env python3
+
 import os
 import sys
 import csv
 import subprocess
 import signal
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
+import re
+from typing import Dict, Set, Optional
+import logging
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
+
 
 class WiFiAutoScanner:
+    """Scanner WiFi automatisé avec détection de réseaux et information vendeur."""
+
+    # Constantes
+    SCAN_INTERVAL = 7  # secondes
+    SLEEP_INTERVAL = 1  # secondes
+    VENDOR_API_TIMEOUT = 2  # secondes
+    CSV_HEADERS = [
+        "Heure", "ESSID", "BSSID", "Vendor", "Sécurité", 
+        "Signal", "Canal", "Clients"
+    ]
+
     def __init__(self):
-        self.csv_file = Path.cwd() / 'wifi_scan_results.csv'
-        self.temp_csv = Path.cwd() / 'temp_scan'
-        self.interface = None
-        self.monitor_interface = None
-        self.airodump_process = None
-        self.known_networks = set()
+        """Initialise le scanner WiFi."""
+        self.csv_file = Path.cwd() / "wifi_scan_results.csv"
+        self.temp_csv = Path.cwd() / "temp_scan"
+
+        self.interface: Optional[str] = None
+        self.monitor_interface: Optional[str] = None
+        self.airodump_process: Optional[subprocess.Popen] = None
+
+        self.known_networks: Set[str] = set()
+        self.vendor_cache: Dict[str, str] = {}
+
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
-    
+
     def signal_handler(self, sig, frame):
-        print("\n[*] Arrêt du scan demandé par Ctrl+C.")
+        """Gère l'interruption du programme."""
+        logger.info("Arrêt demandé.")
         self.cleanup()
         sys.exit(0)
 
-    def check_root(self):
+    def check_root(self) -> None:
+        """Vérifie que le script est exécuté en tant que root."""
         if os.geteuid() != 0:
-            print("[!] Ce script doit être lancé en root (sudo).")
+            logger.error("Lancer avec sudo.")
             sys.exit(1)
 
-    def kill_conflicts(self):
-        print("[*] Suppression des processus gênants (NetworkManager, wpa_supplicant)...")
-        subprocess.run(['airmon-ng', 'check', 'kill'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def run_command(self, cmd: list, silent: bool = True) -> subprocess.CompletedProcess:
+        """Exécute une commande système."""
+        kwargs = {
+            "stdout": subprocess.DEVNULL if silent else None,
+            "stderr": subprocess.DEVNULL if silent else None
+        }
+        return subprocess.run(cmd, **kwargs)
 
-    def find_wireless_interface(self):
-        result = subprocess.run(['iwconfig'], capture_output=True, text=True)
-        for line in result.stdout.split('\n'):
-            if 'IEEE 802.11' in line:
-                self.interface = line.split()[0]
-                print(f"[+] Interface détectée : {self.interface}")
-                return True
-        print("[!] Aucune interface WiFi détectée.")
-        return False
+    def kill_conflicts(self) -> None:
+        """Supprime les processus conflictuels."""
+        logger.info("Suppression des processus gênants...")
+        self.run_command(["airmon-ng", "check", "kill"])
 
-    def setup_monitor_mode(self):
-        print(f"[*] Activation du mode monitor sur {self.interface}...")
-        subprocess.run(['airmon-ng', 'start', self.interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        result = subprocess.run(['iwconfig'], capture_output=True, text=True)
-        for line in result.stdout.split('\n'):
+    # -------------------------
+    # DETECTION INTERFACE WIFI
+    # -------------------------
+
+    def find_wireless_interface(self) -> bool:
+        """Détecte et sélectionne une interface WiFi."""
+        result = subprocess.run(["iw", "dev"], capture_output=True, text=True)
+
+        interfaces = [
+            line.split()[1] 
+            for line in result.stdout.split("\n")
+            if line.strip().startswith("Interface")
+        ]
+
+        if not interfaces:
+            logger.error("Aucune interface WiFi détectée.")
+            return False
+
+        logger.info("Interfaces WiFi détectées :")
+        for i, iface in enumerate(interfaces):
+            print(f"  {i} : {iface}")
+
+        try:
+            choice = int(input("Sélectionne l'interface : "))
+            self.interface = interfaces[choice]
+            logger.info(f"Interface choisie : {self.interface}")
+            return True
+        except (ValueError, IndexError):
+            logger.error("Choix invalide.")
+            return False
+
+    # -------------------------
+    # CHECK MONITOR MODE
+    # -------------------------
+
+    def get_monitor_interface(self) -> Optional[str]:
+        """Récupère l'interface en mode monitor."""
+        result = subprocess.run(["iwconfig"], capture_output=True, text=True)
+
+        for line in result.stdout.split("\n"):
             if "Mode:Monitor" in line:
-                self.monitor_interface = line.split()[0]
-                print(f"[+] Interface monitor : {self.monitor_interface}")
-                return True
-        possible = [f"{self.interface}mon", f"{self.interface}0"]
-        for cand in possible:
-            result = subprocess.run(['iwconfig', cand], capture_output=True, text=True)
-            if "Monitor" in result.stdout:
-                self.monitor_interface = cand
-                print(f"[+] Interface monitor : {self.monitor_interface}")
-                return True
-        print("[!] Échec de l'activation du mode monitor.")
+                return line.split()[0]
+        return None
+
+    def is_monitor_mode(self) -> bool:
+        """Vérifie si une interface est en mode monitor."""
+        self.monitor_interface = self.get_monitor_interface()
+        return self.monitor_interface is not None
+
+    # -------------------------
+    # ACTIVER MONITOR MODE
+    # -------------------------
+
+    def setup_monitor_mode(self) -> bool:
+        """Active le mode monitor sur l'interface."""
+        if self.is_monitor_mode():
+            logger.info(f"Interface déjà en monitor : {self.monitor_interface}")
+            return True
+
+        logger.info(f"Activation monitor sur {self.interface}...")
+        self.run_command(["airmon-ng", "start", self.interface])
+
+        self.monitor_interface = self.get_monitor_interface()
+        if self.monitor_interface:
+            logger.info(f"Interface monitor : {self.monitor_interface}")
+            return True
+
+        logger.error("Impossible d'activer le monitor.")
         return False
 
-    def cleanup(self):
-        print("[*] Nettoyage et retour en mode normal...")
-        try:
-            if self.airodump_process:
-                try:
-                    self.airodump_process.terminate()
-                    self.airodump_process.wait(timeout=2)
-                except Exception:
-                    self.airodump_process.kill()
-        except Exception:
-            pass
-        try:
-            for f in Path.cwd().glob('temp_scan*'):
-                f.unlink(missing_ok=True)
-        except Exception:
-            pass
-        if self.monitor_interface:
-            subprocess.run(['airmon-ng', 'stop', self.monitor_interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"[+] {self.monitor_interface} revenu en mode normal.")
-            subprocess.run(['systemctl', 'restart', 'NetworkManager'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print("[+] NetworkManager relancé.")
-        print("[+] Scan terminé.")
+    # -------------------------
+    # MAC VALIDATION
+    # -------------------------
 
-    def init_csv(self):
-        with open(self.csv_file, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'Heure',
-                'ESSID',
-                'BSSID',
-                'Sécurité',
-                'Signal',
-                'Canal',
-                'Clients'
-            ])
-        print(f"[+] Fichier CSV prêt : {self.csv_file}")
-
-    def is_valid_mac(self, mac):
-        import re
+    @staticmethod
+    def is_valid_mac(mac: str) -> bool:
+        """Valide le format d'une adresse MAC."""
         return re.match(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$', mac) is not None
 
-    def parse_airodump_csv(self):
+    # -------------------------
+    # VENDOR LOOKUP
+    # -------------------------
+
+    def get_vendor(self, mac: str) -> str:
+        """Récupère le vendeur de l'adresse MAC."""
+        prefix = mac.upper()[:8]
+
+        if prefix in self.vendor_cache:
+            return self.vendor_cache[prefix]
+
+        try:
+            url = f"https://api.macvendors.com/{mac}"
+            vendor = urllib.request.urlopen(url, timeout=self.VENDOR_API_TIMEOUT).read().decode()
+        except Exception as e:
+            vendor = "Unknown"
+            logger.debug(f"Erreur lors du lookup vendeur pour {mac}: {e}")
+
+        self.vendor_cache[prefix] = vendor
+        return vendor
+
+    # -------------------------
+    # CSV INIT
+    # -------------------------
+
+    def init_csv(self) -> None:
+        """Initialise le fichier CSV avec les en-têtes."""
+        with open(self.csv_file, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(self.CSV_HEADERS)
+        logger.info(f"CSV prêt : {self.csv_file}")
+
+    # -------------------------
+    # PARSER AIRODUMP
+    # -------------------------
+
+    def parse_airodump_csv(self) -> Dict[str, Dict]:
+        """Parse le fichier CSV d'airodump-ng."""
         result = {}
-        path = str(self.temp_csv) + '-01.csv'
+        path = str(self.temp_csv) + "-01.csv"
 
         if not os.path.exists(path):
             return result
 
         try:
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-        except Exception:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                rows = list(csv.reader(f))
+        except Exception as e:
+            logger.error(f"Erreur lors de la lecture du CSV: {e}")
             return result
 
         in_stations = False
@@ -122,118 +204,144 @@ class WiFiAutoScanner:
         for row in rows:
             if not row:
                 continue
+
             if row[0].strip() == "Station MAC":
                 in_stations = True
                 continue
+
             if not in_stations:
-                if row[0].strip() == "BSSID":
-                    continue
+                # Parsing des réseaux
                 if len(row) < 14:
                     continue
+
                 bssid = row[0].strip()
                 if not self.is_valid_mac(bssid):
                     continue
-                channel = row[3].strip()
-                privacy = row[5].strip()
-                cipher = row[6].strip()
-                auth = row[7].strip()
-                signal = row[8].strip()
-                essid = row[13].strip() if len(row) > 13 else ""
-                if not essid:
-                    essid = "<Hidden>"
+
+                essid = row[13].strip() or "<Hidden>"
                 result[bssid] = {
                     "essid": essid,
-                    "privacy": privacy,
-                    "cipher": cipher,
-                    "auth": auth,
-                    "channel": channel,
-                    "signal": signal,
+                    "privacy": row[5].strip(),
+                    "cipher": row[6].strip(),
+                    "auth": row[7].strip(),
+                    "channel": row[3].strip(),
+                    "signal": row[8].strip(),
                     "clients": 0
                 }
             else:
+                # Parsing des stations
                 if len(row) < 6:
                     continue
-                station_mac = row[0].strip()
-                net_bssid = row[5].strip()
-                if self.is_valid_mac(station_mac) and net_bssid in result:
-                    result[net_bssid]['clients'] += 1
+
+                station = row[0].strip()
+                net = row[5].strip()
+
+                if self.is_valid_mac(station) and net in result:
+                    result[net]["clients"] += 1
+
         return result
 
-    def update_csv(self, networks):
+    # -------------------------
+    # CSV UPDATE
+    # -------------------------
+
+    def update_csv(self, networks: Dict[str, Dict]) -> None:
+        """Met à jour le fichier CSV avec les nouveaux réseaux."""
         for bssid, data in networks.items():
-            now = datetime.now().strftime('%H:%M:%S')
-            essid = data['essid']
+            if bssid in self.known_networks:
+                continue
+
+            self.known_networks.add(bssid)
+
+            now = datetime.now().strftime("%H:%M:%S")
+            essid = data["essid"]
+            vendor = self.get_vendor(bssid)
             sec = f"{data['privacy']} {data['cipher']} {data['auth']}".strip()
-            signal = data['signal']
-            channel = data['channel']
-            clients = data['clients']
-            if bssid not in self.known_networks:
-                self.known_networks.add(bssid)
-                with open(self.csv_file, 'a', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
-                    writer.writerow([now, essid, bssid, sec, signal, channel, clients])
-                print(f"[{now}] Nouveau réseau : {essid:35s} / {bssid}")
-            else:
-                self.update_clients_csv(bssid, clients, now)
 
-    def update_clients_csv(self, bssid, clients, now_time):
-        try:
-            with open(self.csv_file, 'r', encoding='utf-8') as f:
-                rows = list(csv.reader(f))
-            for i in range(len(rows)-1, 0, -1):
-                if len(rows[i]) >= 7 and rows[i][2] == bssid:
-                    rows[i][6] = str(clients)
-                    rows[i][0] = now_time
-                    break
-            with open(self.csv_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerows(rows)
-        except Exception:
-            pass
+            with open(self.csv_file, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    now, essid, bssid, vendor, sec,
+                    data["signal"], data["channel"], data["clients"]
+                ])
 
-    def scan(self):
-        print("\n[*] Scan WiFi lancé (Ctrl+C pour arrêter)...")
-        print(f"[*] Résultats : {self.csv_file}\n")
+            logger.info(f"[{now}] Nouveau réseau : {essid:30s} | {vendor}")
+
+    # -------------------------
+    # SCAN
+    # -------------------------
+
+    def scan(self) -> None:
+        """Lance le scan WiFi continu."""
+        logger.info("Scan WiFi lancé (Ctrl+C pour arrêter)\n")
         self.init_csv()
-        try:
-            while True:
-                try:
-                    self.airodump_process = subprocess.Popen([
-                        'airodump-ng',
-                        '--output-format', 'csv',
-                        '--write', str(self.temp_csv),
-                        '--write-interval', '5',
-                        self.monitor_interface
-                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    self.airodump_process.wait(timeout=7)
-                except subprocess.TimeoutExpired:
-                    try:
-                        self.airodump_process.terminate()
-                    except:
-                        pass
-                except Exception:
-                    pass
-                networks = self.parse_airodump_csv()
-                if networks:
-                    self.update_csv(networks)
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
-        except Exception:
-            pass
-        finally:
-            self.cleanup()
+
+        while True:
+            try:
+                self.airodump_process = subprocess.Popen([
+                    "airodump-ng",
+                    "--band", "abg",
+                    "--output-format", "csv",
+                    "--write", str(self.temp_csv),
+                    "--write-interval", "5",
+                    self.monitor_interface
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                self.airodump_process.wait(timeout=self.SCAN_INTERVAL)
+
+            except subprocess.TimeoutExpired:
+                self.airodump_process.terminate()
+
+            networks = self.parse_airodump_csv()
+            if networks:
+                self.update_csv(networks)
+
+            time.sleep(self.SLEEP_INTERVAL)
+
+    # -------------------------
+    # CLEANUP
+    # -------------------------
+
+    def cleanup(self) -> None:
+        """Nettoie les ressources et restaure le système."""
+        logger.info("Nettoyage...")
+
+        # Arrête le processus airodump
+        if self.airodump_process:
+            try:
+                self.airodump_process.kill()
+            except Exception:
+                pass
+
+        # Supprime les fichiers temporaires
+        for f in Path.cwd().glob("temp_scan*"):
+            try:
+                f.unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug(f"Erreur lors de la suppression de {f}: {e}")
+
+        # Désactive le mode monitor
+        if self.monitor_interface:
+            self.run_command(["airmon-ng", "stop", self.monitor_interface])
+            self.run_command(["systemctl", "restart", "NetworkManager"])
+
+        logger.info("Terminé.")
 
 
-def main():
+def main() -> None:
+    """Fonction principale."""
     scanner = WiFiAutoScanner()
+
     scanner.check_root()
     scanner.kill_conflicts()
+
     if not scanner.find_wireless_interface():
         return
+
     if not scanner.setup_monitor_mode():
         return
+
     scanner.scan()
+
 
 if __name__ == "__main__":
     main()
