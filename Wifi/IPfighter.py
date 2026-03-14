@@ -310,8 +310,16 @@ def kill_conflicts():
     print(f"{Colors.CYAN}[!] NetworkManager reste actif pour l'accès Internet{Colors.RESET}")
 
 def start_monitor_airmon(interface: str) -> Optional[str]:
- 
-     global mon_iface_created
+    """
+    Démarre le mode monitor avec airmon-ng
+    
+    Args:
+        interface: Interface à convertir
+    
+    Returns:
+        Nom de l'interface monitor créée
+    """
+    global mon_iface_created
     
     print(f"\n{Colors.GREEN}[+] Conversion de {interface} en mode monitor via airmon-ng...{Colors.RESET}")
     logger.info(f"Conversion de {interface} en mode monitor avec airmon-ng")
