@@ -227,7 +227,7 @@ def check_dependencies() -> bool:
     print(f"\n{Colors.CYAN}[*] Vérification des dépendances...{Colors.RESET}")
     
     for tool in required_tools:
-        if execute_command(['which', tool]) is None:
+        if execute_command(['which', tool], capture_output=True) is None:
             missing_tools.append(tool)
             print(f"{Colors.RED}  ✗ {tool} - NON INSTALLÉ{Colors.RESET}")
         else:
@@ -668,7 +668,7 @@ def create_fake_ap(mon_iface: str, ssid: str, bssid: str, channel: str,
     logger.info(f"Création du faux AP: SSID={ssid}, Canal={channel}")
     
     for tool in ['hostapd', 'dnsmasq']:
-        if execute_command(['which', tool]) is None:
+        if execute_command(['which', tool], capture_output=True) is None:
             print(f"{Colors.RED}[-] {tool} n'est pas installé !{Colors.RESET}")
             return None, None
     
@@ -886,6 +886,10 @@ def main():
     if not check_dependencies():
         sys.exit(1)
     
+    inet_iface = None  # CORRECTION: Initialiser avant utilisation
+    mon_iface = None   # CORRECTION: Initialiser avant utilisation
+    target_ap = None   # CORRECTION: Initialiser avant utilisation
+    
     try:
         inet_iface = choose_interface("Interface pour l'accès INTERNET")
         
@@ -991,11 +995,12 @@ def main():
         print(f"{Colors.RED}[-] Erreur: {e}{Colors.RESET}")
     
     finally:
-        if 'target_ap' in locals():
-            save_results(target_ap, inet_iface, mon_iface_created if mon_iface_created else mon_iface if 'mon_iface' in locals() else None)
+        if target_ap is not None:  # CORRECTION: Vérifier que target_ap est défini
+            save_results(target_ap, inet_iface if inet_iface else "unknown", 
+                        mon_iface_created if mon_iface_created else (mon_iface if mon_iface else "unknown"))
         
         cleanup()
-        restore_network(mon_iface_created if mon_iface_created else mon_iface if 'mon_iface' in locals() else None)
+        restore_network(mon_iface_created if mon_iface_created else (mon_iface if mon_iface else None))
         print(f"\n{Colors.GREEN}[+] Nettoyage terminé. Au revoir !{Colors.RESET}")
         logger.info("Programme terminé")
 
