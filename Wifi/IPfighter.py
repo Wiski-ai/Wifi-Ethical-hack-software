@@ -13,7 +13,6 @@ import threading
 import re
 import logging
 import json
-import tempfile
 import shlex
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
@@ -216,7 +215,6 @@ def execute_command(cmd: List[str], timeout: Optional[int] = None,
     """
     try:
         if shell and isinstance(cmd, str):
-            # Pas d'injection directe - on log et on continue
             result = subprocess.run(cmd, shell=True, capture_output=capture_output,
                                   timeout=timeout, text=True, stderr=subprocess.PIPE)
         else:
@@ -253,12 +251,26 @@ def check_dependencies() -> bool:
     print(f"\n{Colors.CYAN}[*] Vérification des dépendances...{Colors.RESET}")
     
     for tool in required_tools:
-        result = execute_command(['which', tool], capture_output=True)
-        if result is None:
+        try:
+            # ✅ Vérifier returncode au lieu de vérifier None
+            result = subprocess.run(['which', tool], 
+                                  capture_output=True, 
+                                  text=True, 
+                                  timeout=5)
+            
+            if result.returncode != 0:
+                missing_tools.append(tool)
+                print(f"{Colors.RED}  ✗ {tool} - NON INSTALLÉ{Colors.RESET}")
+            else:
+                print(f"{Colors.GREEN}  ✓ {tool}{Colors.RESET}")
+                logger.debug(f"{tool} trouvé à: {result.stdout.strip()}")
+        
+        except subprocess.TimeoutExpired:
             missing_tools.append(tool)
-            print(f"{Colors.RED}  ✗ {tool} - NON INSTALLÉ{Colors.RESET}")
-        else:
-            print(f"{Colors.GREEN}  ✓ {tool}{Colors.RESET}")
+            print(f"{Colors.RED}  ✗ {tool} - TIMEOUT{Colors.RESET}")
+        except Exception as e:
+            missing_tools.append(tool)
+            print(f"{Colors.RED}  ✗ {tool} - ERREUR: {e}{Colors.RESET}")
     
     if missing_tools:
         logger.error(f"Dépendances manquantes: {', '.join(missing_tools)}")
@@ -268,7 +280,10 @@ def check_dependencies() -> bool:
     
     # Vérifier la version d'airmon-ng pour le support --no-kill
     try:
-        result = subprocess.run(['airmon-ng', '--help'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(['airmon-ng', '--help'], 
+                              capture_output=True, 
+                              text=True, 
+                              timeout=5)
         if '--no-kill' in result.stdout or '-N' in result.stdout:
             print(f"{Colors.GREEN}  ✓ airmon-ng supporte --no-kill (mode sécurisé){Colors.RESET}")
             logger.info("airmon-ng supporte --no-kill")
@@ -277,8 +292,8 @@ def check_dependencies() -> bool:
             logger.warning("airmon-ng ne supporte peut-être pas --no-kill")
     except subprocess.TimeoutExpired:
         logger.warning("Timeout lors de la vérification d'airmon-ng")
-    except FileNotFoundError:
-        pass
+    except Exception as e:
+        logger.warning(f"Erreur lors de la vérification d'airmon-ng: {e}")
     
     logger.info("Toutes les dépendances sont présentes")
     return True
@@ -704,7 +719,8 @@ def create_fake_ap(mon_iface: str, ssid: str, channel: str,
     logger.info(f"Création du faux AP: SSID={ssid}, Canal={channel}")
     
     for tool in ['hostapd', 'dnsmasq']:
-        if execute_command(['which', tool], capture_output=True) is None:
+        result = subprocess.run(['which', tool], capture_output=True, text=True)
+        if result.returncode != 0:
             print(f"{Colors.RED}[-] {tool} n'est pas installé !{Colors.RESET}")
             return None, None
     
