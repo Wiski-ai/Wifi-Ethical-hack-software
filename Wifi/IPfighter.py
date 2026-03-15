@@ -61,7 +61,6 @@ class Config:
         Path(Config.TEMP_DIR).mkdir(parents=True, exist_ok=True)
         Path(Config.CAPTURE_DIR).mkdir(parents=True, exist_ok=True)
         
-        # Utiliser tempfile pour la sécurité
         Config.SCAN_FILE = os.path.join(Config.TEMP_DIR, "scan_ipf")
         Config.HOSTAPD_CONF = os.path.join(Config.TEMP_DIR, "hostapd.conf")
         Config.DNSMASQ_CONF = os.path.join(Config.TEMP_DIR, "dnsmasq.conf")
@@ -215,15 +214,28 @@ def execute_command(cmd: List[str], timeout: Optional[int] = None,
     """
     try:
         if shell and isinstance(cmd, str):
-            result = subprocess.run(cmd, shell=True, capture_output=capture_output,
-                                  timeout=timeout, text=True, stderr=subprocess.PIPE)
+            # Si on capture_output=True, ne pas spécifier stderr
+            if capture_output:
+                result = subprocess.run(cmd, shell=True, capture_output=True,
+                                      timeout=timeout, text=True)
+            else:
+                result = subprocess.run(cmd, shell=True,
+                                      timeout=timeout, text=True)
         else:
-            result = subprocess.run(cmd, capture_output=capture_output, timeout=timeout,
-                                  text=True, stderr=subprocess.PIPE, close_fds=True)
+            # Même logique pour les commandes en liste
+            if capture_output:
+                result = subprocess.run(cmd, capture_output=True, timeout=timeout,
+                                      text=True, close_fds=True)
+            else:
+                result = subprocess.run(cmd, timeout=timeout,
+                                      text=True, close_fds=True)
         
         # Log les erreurs si présent
-        if result.returncode != 0 and result.stderr:
-            logger.warning(f"Commande retourna {result.returncode}: {result.stderr.strip()}")
+        if result.returncode != 0:
+            if hasattr(result, 'stderr') and result.stderr:
+                logger.warning(f"Commande retourna {result.returncode}: {result.stderr.strip()}")
+            elif capture_output:
+                logger.warning(f"Commande retourna {result.returncode}")
         
         return result.stdout.strip() if capture_output else None
     
@@ -252,7 +264,7 @@ def check_dependencies() -> bool:
     
     for tool in required_tools:
         try:
-            # ✅ Vérifier returncode au lieu de vérifier None
+            # Vérifier returncode au lieu de vérifier None
             result = subprocess.run(['which', tool], 
                                   capture_output=True, 
                                   text=True, 
@@ -298,43 +310,145 @@ def check_dependencies() -> bool:
     logger.info("Toutes les dépendances sont présentes")
     return True
 
-def list_interfaces() -> List[str]:
-    """Liste toutes les interfaces réseau Wi-Fi disponibles"""
+def list_all_interfaces() -> List[Tuple[str, str]]:
+    """Liste toutes les interfaces réseau (Wi-Fi + Ethernet + autres)
+    
+    Returns:
+        Liste de tuples (nom_interface, type)
+    """
     try:
-        output = execute_command(
-            "iw dev | awk '$1==\"Interface\"{print $2}'",
-            shell=True, capture_output=True
+        result = subprocess.run(
+            "ip link show | grep '^[0-9]' | awk '{print $2}' | sed 's/:$//'",
+            shell=True, capture_output=True, text=True, timeout=5
         )
         
-        if output:
-            interfaces = [iface.strip() for iface in output.split('\n') if iface.strip()]
+        if result.returncode == 0 and result.stdout:
+            interfaces = []
+            for iface in result.stdout.strip().split('\n'):
+                iface = iface.strip()
+                if iface and iface != 'lo':  # Exclure loopback
+                    # Déterminer le type d'interface
+                    iface_type = get_interface_type(iface)
+                    interfaces.append((iface, iface_type))
+            
             logger.info(f"Interfaces trouvées: {interfaces}")
             return interfaces
         
+        logger.debug(f"Aucune interface trouvée. stdout={result.stdout}")
+        return []
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout lors de la récupération des interfaces")
         return []
     except Exception as e:
         logger.error(f"Erreur lors de la récupération des interfaces: {e}")
         return []
 
-def choose_interface(prompt: str) -> Optional[str]:
-    """Permet à l'utilisateur de choisir une interface"""
-    interfaces = list_interfaces()
+def get_interface_type(iface: str) -> str:
+    """Détecte le type d'interface (Wi-Fi, Ethernet, etc.)
+    
+    Args:
+        iface: Nom de l'interface
+    
+    Returns:
+        Type d'interface
+    """
+    try:
+        # Vérifier si c'est Wi-Fi
+        result = subprocess.run(
+            f"iw dev {iface} link 2>/dev/null",
+            shell=True, capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0:
+            return "Wi-Fi"
+        
+        # Vérifier si c'est Ethernet/filaire
+        result = subprocess.run(
+            f"ethtool {iface} 2>/dev/null | grep -q 'Link detected'",
+            shell=True, capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0:
+            return "Ethernet"
+        
+        # Vérifier le préfixe
+        if iface.startswith(('wlan', 'wlp', 'wlo', 'ath')):
+            return "Wi-Fi"
+        elif iface.startswith(('eth', 'en', 'em')):
+            return "Ethernet"
+        
+        return "Autre"
+    except Exception:
+        return "Autre"
+
+def choose_internet_interface() -> Optional[str]:
+    """Permet à l'utilisateur de choisir une interface pour Internet"""
+    interfaces = list_all_interfaces()
+    
+    if not interfaces:
+        logger.error("Aucune interface réseau détectée")
+        print(f"{Colors.RED}[-] Aucune interface réseau détectée !{Colors.RESET}")
+        return None
+    
+    print(f"\n{Colors.BLUE}[+] Interfaces réseau disponibles (Internet):{Colors.RESET}")
+    for i, (iface, iface_type) in enumerate(interfaces):
+        icon = "📡" if iface_type == "Wi-Fi" else "🔌" if iface_type == "Ethernet" else "⚙️"
+        print(f"{Colors.YELLOW}  {i}.{Colors.RESET} {icon} {iface:<15} ({Colors.CYAN}{iface_type}{Colors.RESET})")
+    
+    while True:
+        try:
+            idx = int(input(f"\n{Colors.ORANGE}[?] Interface pour l'accès INTERNET : {Colors.RESET}"))
+            if 0 <= idx < len(interfaces):
+                selected, iface_type = interfaces[idx]
+                logger.info(f"Interface Internet sélectionnée: {selected} ({iface_type})")
+                return selected
+            else:
+                print(f"{Colors.RED}[-] Choix invalide ! Veuillez entrer un nombre entre 0 et {len(interfaces)-1}{Colors.RESET}")
+        except ValueError:
+            print(f"{Colors.RED}[-] Entrée invalide ! Veuillez entrer un nombre.{Colors.RESET}")
+        except KeyboardInterrupt:
+            logger.info("Sélection d'interface annulée par l'utilisateur")
+            return None
+
+def list_wifi_interfaces() -> List[str]:
+    """Liste les interfaces Wi-Fi disponibles"""
+    try:
+        result = subprocess.run(
+            "iw dev | awk '$1==\"Interface\"{print $2}'",
+            shell=True, capture_output=True, text=True, timeout=5
+        )
+        
+        if result.returncode == 0 and result.stdout:
+            interfaces = [iface.strip() for iface in result.stdout.split('\n') if iface.strip()]
+            logger.info(f"Interfaces Wi-Fi trouvées: {interfaces}")
+            return interfaces
+        
+        logger.debug(f"Aucune interface Wi-Fi trouvée. stdout={result.stdout}")
+        return []
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout lors de la récupération des interfaces Wi-Fi")
+        return []
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des interfaces Wi-Fi: {e}")
+        return []
+
+def choose_attack_interface() -> Optional[str]:
+    """Permet à l'utilisateur de choisir une interface pour l'attaque (Wi-Fi)"""
+    interfaces = list_wifi_interfaces()
     
     if not interfaces:
         logger.error("Aucune interface Wi-Fi détectée")
         print(f"{Colors.RED}[-] Aucune interface Wi-Fi détectée !{Colors.RESET}")
         return None
     
-    print(f"\n{Colors.BLUE}[+] Interfaces disponibles :{Colors.RESET}")
+    print(f"\n{Colors.BLUE}[+] Interfaces Wi-Fi disponibles (Attaque):{Colors.RESET}")
     for i, iface in enumerate(interfaces):
-        print(f"{Colors.YELLOW}  {i}.{Colors.RESET} {iface}")
+        print(f"{Colors.YELLOW}  {i}.{Colors.RESET} 📡 {iface}")
     
     while True:
         try:
-            idx = int(input(f"\n{Colors.ORANGE}[?] {prompt} : {Colors.RESET}"))
+            idx = int(input(f"\n{Colors.ORANGE}[?] Interface pour l'ATTAQUE (sera convertie en mode monitor) : {Colors.RESET}"))
             if 0 <= idx < len(interfaces):
                 selected = interfaces[idx]
-                logger.info(f"Interface sélectionnée: {selected}")
+                logger.info(f"Interface d'attaque sélectionnée: {selected}")
                 return selected
             else:
                 print(f"{Colors.RED}[-] Choix invalide ! Veuillez entrer un nombre entre 0 et {len(interfaces)-1}{Colors.RESET}")
@@ -353,7 +467,6 @@ def kill_conflicts():
     
     for process in conflicting_processes:
         try:
-            # Utiliser shlex pour sécuriser la commande
             cmd = f"pkill -f {shlex.quote(process)}"
             execute_command(cmd, shell=True)
             logger.debug(f"Processus {process} arrêté")
@@ -381,7 +494,7 @@ def start_monitor_airmon(interface: str) -> Optional[str]:
     logger.info(f"Conversion de {interface} en mode monitor avec airmon-ng")
     
     try:
-        before = set(list_interfaces())
+        before = set(list_wifi_interfaces())
     except Exception:
         before = set()
     
@@ -416,7 +529,7 @@ def start_monitor_airmon(interface: str) -> Optional[str]:
     if not mon_iface:
         try:
             time.sleep(1)
-            after = set(list_interfaces())
+            after = set(list_wifi_interfaces())
             new_ifaces = list(after - before)
             
             for iface in new_ifaces:
@@ -434,7 +547,7 @@ def start_monitor_airmon(interface: str) -> Optional[str]:
     
     # Fallback final
     if not mon_iface:
-        candidates = [iface for iface in list_interfaces() if "mon" in iface.lower() and iface != interface]
+        candidates = [iface for iface in list_wifi_interfaces() if "mon" in iface.lower() and iface != interface]
         if candidates:
             mon_iface = candidates[0]
             logger.warning(f"Interface monitor trouvée en cherchant toutes les interfaces: {mon_iface}")
@@ -952,7 +1065,7 @@ def main():
     target_ap = None
     
     try:
-        inet_iface = choose_interface("Interface pour l'accès INTERNET")
+        inet_iface = choose_internet_interface()
         if not inet_iface:
             return
         
@@ -960,7 +1073,7 @@ def main():
         print(f"{Colors.CYAN}[*] Cette interface sera gérée par NetworkManager{Colors.RESET}")
         
         banner()
-        atk_iface = choose_interface("Interface pour l'ATTAQUE (sera convertie en mode monitor)")
+        atk_iface = choose_attack_interface()
         if not atk_iface:
             return
         
