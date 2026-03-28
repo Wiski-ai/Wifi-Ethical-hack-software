@@ -6,32 +6,26 @@ import csv
 import subprocess
 import signal
 import time
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 import re
 from typing import Dict, Set, Optional
 import logging
 
-# Configuration du logging
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
 
 class WiFiAutoScanner:
-    """Scanner WiFi automatisé avec détection de réseaux et information vendeur."""
 
-    # Constantes
-    SCAN_INTERVAL = 7  # secondes
-    SLEEP_INTERVAL = 1  # secondes
-    VENDOR_API_TIMEOUT = 2  # secondes
+    SLEEP_INTERVAL = 1
+
     CSV_HEADERS = [
-        "Heure", "ESSID", "BSSID", "Vendor", "Sécurité", 
+        "Heure", "ESSID", "BSSID", "Vendor", "Sécurité",
         "Signal", "Canal", "Clients"
     ]
 
     def __init__(self):
-        """Initialise le scanner WiFi."""
         self.csv_file = Path.cwd() / "wifi_scan_results.csv"
         self.temp_csv = Path.cwd() / "temp_scan"
 
@@ -40,163 +34,127 @@ class WiFiAutoScanner:
         self.airodump_process: Optional[subprocess.Popen] = None
 
         self.known_networks: Set[str] = set()
-        self.vendor_cache: Dict[str, str] = {}
+        self.vendor_db: Dict[str, str] = {}
 
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
+        signal.signal(signal.SIGINT, self.cleanup)
 
-    def signal_handler(self, sig, frame):
-        """Gère l'interruption du programme."""
-        logger.info("Arrêt demandé.")
-        self.cleanup()
-        sys.exit(0)
+    # -------------------------
+    # SYSTEM
+    # -------------------------
 
-    def check_root(self) -> None:
-        """Vérifie que le script est exécuté en tant que root."""
-        if os.geteuid() != 0:
-            logger.error("Lancer avec sudo.")
-            sys.exit(1)
+    def run_command(self, cmd):
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    def run_command(self, cmd: list, silent: bool = True) -> subprocess.CompletedProcess:
-        """Exécute une commande système."""
-        kwargs = {
-            "stdout": subprocess.DEVNULL if silent else None,
-            "stderr": subprocess.DEVNULL if silent else None
-        }
-        return subprocess.run(cmd, **kwargs)
-
-    def kill_conflicts(self) -> None:
-        """Supprime les processus conflictuels."""
-        logger.info("Suppression des processus gênants...")
+    def kill_conflicts(self):
         self.run_command(["airmon-ng", "check", "kill"])
 
+    def check_root(self):
+        if os.geteuid() != 0:
+            print("sudo requis")
+            sys.exit(1)
+
     # -------------------------
-    # DETECTION INTERFACE WIFI
+    # WIFI INTERFACE
     # -------------------------
 
-    def find_wireless_interface(self) -> bool:
-        """Détecte et sélectionne une interface WiFi."""
+    def find_wireless_interface(self):
         result = subprocess.run(["iw", "dev"], capture_output=True, text=True)
 
         interfaces = [
-            line.split()[1] 
+            line.split()[1]
             for line in result.stdout.split("\n")
             if line.strip().startswith("Interface")
         ]
 
         if not interfaces:
-            logger.error("Aucune interface WiFi détectée.")
             return False
 
-        logger.info("Interfaces WiFi détectées :")
         for i, iface in enumerate(interfaces):
-            print(f"  {i} : {iface}")
+            print(f"{i} : {iface}")
 
-        try:
-            choice = int(input("Sélectionne l'interface : "))
-            self.interface = interfaces[choice]
-            logger.info(f"Interface choisie : {self.interface}")
-            return True
-        except (ValueError, IndexError):
-            logger.error("Choix invalide.")
-            return False
+        self.interface = interfaces[int(input("Choix : "))]
 
-    # -------------------------
-    # CHECK MONITOR MODE
-    # -------------------------
+        return True
 
-    def get_monitor_interface(self) -> Optional[str]:
-        """Récupère l'interface en mode monitor."""
+    def get_monitor_interface(self):
         result = subprocess.run(["iwconfig"], capture_output=True, text=True)
 
         for line in result.stdout.split("\n"):
             if "Mode:Monitor" in line:
                 return line.split()[0]
+
         return None
 
-    def is_monitor_mode(self) -> bool:
-        """Vérifie si une interface est en mode monitor."""
-        self.monitor_interface = self.get_monitor_interface()
-        return self.monitor_interface is not None
-
-    # -------------------------
-    # ACTIVER MONITOR MODE
-    # -------------------------
-
-    def setup_monitor_mode(self) -> bool:
-        """Active le mode monitor sur l'interface."""
-        if self.is_monitor_mode():
-            logger.info(f"Interface déjà en monitor : {self.monitor_interface}")
-            return True
-
-        logger.info(f"Activation monitor sur {self.interface}...")
+    def setup_monitor_mode(self):
         self.run_command(["airmon-ng", "start", self.interface])
 
         self.monitor_interface = self.get_monitor_interface()
-        if self.monitor_interface:
-            logger.info(f"Interface monitor : {self.monitor_interface}")
-            return True
 
-        logger.error("Impossible d'activer le monitor.")
-        return False
+        return self.monitor_interface is not None
 
     # -------------------------
-    # MAC VALIDATION
+    # MAC VENDOR DATABASE (TON FICHIER)
     # -------------------------
 
-    @staticmethod
-    def is_valid_mac(mac: str) -> bool:
-        """Valide le format d'une adresse MAC."""
-        return re.match(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$', mac) is not None
+    def load_vendor_database(self):
+        """Charge MACVendors.txt (format IEEE brut)"""
 
-    # -------------------------
-    # VENDOR LOOKUP
-    # -------------------------
-
-    def get_vendor(self, mac: str) -> str:
-        """Récupère le vendeur de l'adresse MAC."""
-        prefix = mac.upper()[:8]
-
-        if prefix in self.vendor_cache:
-            return self.vendor_cache[prefix]
+        self.vendor_db = {}
 
         try:
-            url = f"https://api.macvendors.com/{mac}"
-            vendor = urllib.request.urlopen(url, timeout=self.VENDOR_API_TIMEOUT).read().decode()
+            with open("MACVendors.txt", "r", encoding="utf-8", errors="ignore") as f:
+
+                current_mac = None
+
+                for line in f:
+                    line = line.strip()
+
+                    # Ligne HEX (format principal)
+                    if "(hex)" in line:
+                        parts = line.split("(hex)")
+                        mac = parts[0].strip().upper().replace("-", ":")
+                        vendor = parts[1].strip()
+
+                        mac = ":".join(mac.split(":")[:3])
+
+                        self.vendor_db[mac] = vendor
+                        current_mac = mac
+
+                    # Fallback base 16 (rarement utile mais on garde)
+                    elif "(base 16)" in line and current_mac:
+                        continue
+
+            logger.info(f"{len(self.vendor_db)} vendors chargés")
+
         except Exception as e:
-            vendor = "Unknown"
-            logger.debug(f"Erreur lors du lookup vendeur pour {mac}: {e}")
+            logger.error(f"Erreur MACVendors: {e}")
 
-        self.vendor_cache[prefix] = vendor
-        return vendor
+    def get_vendor(self, mac: str) -> str:
+        return self.vendor_db.get(mac.upper()[:8], "Unknown")
 
     # -------------------------
-    # CSV INIT
+    # CSV
     # -------------------------
 
-    def init_csv(self) -> None:
-        """Initialise le fichier CSV avec les en-têtes."""
+    def init_csv(self):
         with open(self.csv_file, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(self.CSV_HEADERS)
-        logger.info(f"CSV prêt : {self.csv_file}")
 
     # -------------------------
     # PARSER AIRODUMP
     # -------------------------
 
     def parse_airodump_csv(self) -> Dict[str, Dict]:
-        """Parse le fichier CSV d'airodump-ng."""
         result = {}
         path = str(self.temp_csv) + "-01.csv"
 
-        if not os.path.exists(path):
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
             return result
 
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 rows = list(csv.reader(f))
-        except Exception as e:
-            logger.error(f"Erreur lors de la lecture du CSV: {e}")
+        except:
             return result
 
         in_stations = False
@@ -210,17 +168,16 @@ class WiFiAutoScanner:
                 continue
 
             if not in_stations:
-                # Parsing des réseaux
                 if len(row) < 14:
                     continue
 
                 bssid = row[0].strip()
-                if not self.is_valid_mac(bssid):
+
+                if not re.match(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$', bssid):
                     continue
 
-                essid = row[13].strip() or "<Hidden>"
                 result[bssid] = {
-                    "essid": essid,
+                    "essid": row[13].strip() or "<Hidden>",
                     "privacy": row[5].strip(),
                     "cipher": row[6].strip(),
                     "auth": row[7].strip(),
@@ -228,107 +185,86 @@ class WiFiAutoScanner:
                     "signal": row[8].strip(),
                     "clients": 0
                 }
-            else:
-                # Parsing des stations
-                if len(row) < 6:
-                    continue
-
-                station = row[0].strip()
-                net = row[5].strip()
-
-                if self.is_valid_mac(station) and net in result:
-                    result[net]["clients"] += 1
 
         return result
 
     # -------------------------
-    # CSV UPDATE
+    # UPDATE CSV
     # -------------------------
 
-    def update_csv(self, networks: Dict[str, Dict]) -> None:
-        """Met à jour le fichier CSV avec les nouveaux réseaux."""
+    def update_csv(self, networks):
         for bssid, data in networks.items():
+
             if bssid in self.known_networks:
                 continue
 
             self.known_networks.add(bssid)
 
             now = datetime.now().strftime("%H:%M:%S")
-            essid = data["essid"]
             vendor = self.get_vendor(bssid)
-            sec = f"{data['privacy']} {data['cipher']} {data['auth']}".strip()
 
             with open(self.csv_file, "a", newline="", encoding="utf-8") as f:
                 csv.writer(f).writerow([
-                    now, essid, bssid, vendor, sec,
-                    data["signal"], data["channel"], data["clients"]
+                    now,
+                    data["essid"],
+                    bssid,
+                    vendor,
+                    f"{data['privacy']} {data['cipher']} {data['auth']}",
+                    data["signal"],
+                    data["channel"],
+                    data["clients"]
                 ])
 
-            logger.info(f"[{now}] Nouveau réseau : {essid:30s} | {vendor}")
+            print(f"{now} | {data['essid']} | {vendor}")
 
     # -------------------------
     # SCAN
     # -------------------------
 
-    def scan(self) -> None:
-        """Lance le scan WiFi continu."""
-        logger.info("Scan WiFi lancé (Ctrl+C pour arrêter)\n")
+    def scan(self):
+
         self.init_csv()
 
-        while True:
-            try:
-                self.airodump_process = subprocess.Popen([
-                    "airodump-ng",
-                    "--band", "abg",
-                    "--output-format", "csv",
-                    "--write", str(self.temp_csv),
-                    "--write-interval", "5",
-                    self.monitor_interface
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.airodump_process = subprocess.Popen([
+            "airodump-ng",
+            "--band", "abg",
+            "--output-format", "csv",
+            "--write", str(self.temp_csv),
+            self.monitor_interface
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-                self.airodump_process.wait(timeout=self.SCAN_INTERVAL)
+        try:
+            while True:
+                networks = self.parse_airodump_csv()
 
-            except subprocess.TimeoutExpired:
-                self.airodump_process.terminate()
+                if networks:
+                    self.update_csv(networks)
 
-            networks = self.parse_airodump_csv()
-            if networks:
-                self.update_csv(networks)
+                time.sleep(self.SLEEP_INTERVAL)
 
-            time.sleep(self.SLEEP_INTERVAL)
+        except KeyboardInterrupt:
+            pass
+
+        finally:
+            self.cleanup()
 
     # -------------------------
     # CLEANUP
     # -------------------------
 
-    def cleanup(self) -> None:
-        """Nettoie les ressources et restaure le système."""
-        logger.info("Nettoyage...")
+    def cleanup(self, *args):
+        print("\nNettoyage...")
 
-        # Arrête le processus airodump
         if self.airodump_process:
-            try:
-                self.airodump_process.kill()
-            except Exception:
-                pass
+            self.airodump_process.terminate()
 
-        # Supprime les fichiers temporaires
-        for f in Path.cwd().glob("temp_scan*"):
-            try:
-                f.unlink(missing_ok=True)
-            except Exception as e:
-                logger.debug(f"Erreur lors de la suppression de {f}: {e}")
-
-        # Désactive le mode monitor
         if self.monitor_interface:
             self.run_command(["airmon-ng", "stop", self.monitor_interface])
-            self.run_command(["systemctl", "restart", "NetworkManager"])
 
-        logger.info("Terminé.")
+        sys.exit(0)
 
 
-def main() -> None:
-    """Fonction principale."""
+def main():
     scanner = WiFiAutoScanner()
 
     scanner.check_root()
@@ -339,6 +275,8 @@ def main() -> None:
 
     if not scanner.setup_monitor_mode():
         return
+
+    scanner.load_vendor_database()
 
     scanner.scan()
 
