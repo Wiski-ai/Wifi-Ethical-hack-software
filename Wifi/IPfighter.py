@@ -467,11 +467,7 @@ def kill_conflicts():
     logger.info("Processus conflictuels arrêtés")
 
 def start_monitor_airmon(interface: str) -> Optional[str]:
-    """
-    Démarre le mode monitor avec airmon-ng
-    
-    CORRECTION CLÉE: Utiliser --no-kill pour préserver NetworkManager
-    """
+
     global mon_iface_created
     
     print(f"\n{Colors.GREEN}[+] Conversion de {interface} en mode monitor...{Colors.RESET}")
@@ -887,13 +883,7 @@ def aggressive_deauth(mon_iface: str, bssid: str, duration: int = Config.DEFAULT
 
 def create_fake_ap(mon_iface: str, ssid: str, channel: str, 
                   force_wpa: bool = True) -> Tuple[Optional[subprocess.Popen], Optional[subprocess.Popen]]:
-    """
-    CORRECTION CLÉE: hostapd doit tourner sur une interface RÉELLE, pas monitor
-    
-    Stratégie:
-    1. Si on a une deuxième interface Wi-Fi, l'utiliser pour le faux AP
-    2. Sinon, utiliser la même interface (nettoyer avant)
-    """
+
     print(f"\n{Colors.GREEN}[+] Création du faux AP '{ssid}' canal {channel}...{Colors.RESET}")
     logger.info(f"Création faux AP: SSID={ssid}, Channel={channel}")
     
@@ -1282,3 +1272,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
