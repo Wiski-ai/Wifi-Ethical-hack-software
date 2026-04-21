@@ -1393,4 +1393,35 @@ class MacFightPro:
                     pass
             
             elif choice == "4":
-                self.attack_factory.evil_twin_attack(**
+                self.attack_factory.evil_twin_attack(ap, self.monitor_interface)
+            
+            elif choice == "5":
+                self.attack_factory.wps_attack(ap, self.monitor_interface)
+            
+            elif choice == "6":
+                return True
+            
+            elif choice == "0":
+                return False
+            
+            else:
+                print(f"{Colors.RED}[-] Invalid choice!{Colors.RESET}")
+
+
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
+def main():
+    """Point d'entrée"""
+    try:
+        app = MacFightPro()
+        app.run()
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        print(f"{Colors.RED}[-] Fatal error: {e}{Colors.RESET}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
