@@ -38,9 +38,7 @@ class WiFiAutoScanner:
 
         signal.signal(signal.SIGINT, self.cleanup)
 
-    # -------------------------
-    # SYSTEM
-    # -------------------------
+
 
     def run_command(self, cmd):
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -53,9 +51,7 @@ class WiFiAutoScanner:
             print("sudo requis")
             sys.exit(1)
 
-    # -------------------------
-    # WIFI INTERFACE
-    # -------------------------
+
 
     def find_wireless_interface(self):
         result = subprocess.run(["iw", "dev"], capture_output=True, text=True)
@@ -92,9 +88,7 @@ class WiFiAutoScanner:
 
         return self.monitor_interface is not None
 
-    # -------------------------
-    # MAC VENDOR DATABASE (TON FICHIER)
-    # -------------------------
+
 
     def load_vendor_database(self):
         """Charge MACVendors.txt (format IEEE brut)"""
@@ -132,17 +126,13 @@ class WiFiAutoScanner:
     def get_vendor(self, mac: str) -> str:
         return self.vendor_db.get(mac.upper()[:8], "Unknown")
 
-    # -------------------------
-    # CSV
-    # -------------------------
+
 
     def init_csv(self):
         with open(self.csv_file, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(self.CSV_HEADERS)
 
-    # -------------------------
-    # PARSER AIRODUMP
-    # -------------------------
+
 
     def parse_airodump_csv(self) -> Dict[str, Dict]:
         result = {}
@@ -188,9 +178,7 @@ class WiFiAutoScanner:
 
         return result
 
-    # -------------------------
-    # UPDATE CSV
-    # -------------------------
+
 
     def update_csv(self, networks):
         for bssid, data in networks.items():
@@ -217,9 +205,7 @@ class WiFiAutoScanner:
 
             print(f"{now} | {data['essid']} | {vendor}")
 
-    # -------------------------
-    # SCAN
-    # -------------------------
+
 
     def scan(self):
 
@@ -248,9 +234,7 @@ class WiFiAutoScanner:
         finally:
             self.cleanup()
 
-    # -------------------------
-    # CLEANUP
-    # -------------------------
+
 
     def cleanup(self, *args):
         print("\nNettoyage...")
