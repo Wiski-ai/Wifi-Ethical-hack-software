@@ -39,9 +39,9 @@ except ImportError as e:
     print(f"[-] Scapy import error: {e}")
     sys.exit(1)
 
-# ============================================================================
+
 # CONFIGURATION LOGGING
-# ============================================================================
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,9 +54,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
+
 # ÉNUMÉRATIONS & CONSTANTES
-# ============================================================================
+
 
 class Colors:
     """ANSI color codes"""
@@ -86,9 +86,9 @@ class AttackType(Enum):
     WPS = "wps"
 
 
-# ============================================================================
+
 # DATACLASSES
-# ============================================================================
+
 
 @dataclass
 class APInfo:
@@ -116,9 +116,9 @@ class ProcessMetadata:
         self.creation_time = time.time()
 
 
-# ============================================================================
+
 # GESTIONNAIRE DE PROCESSUS - CRITÈRE 1
-# ============================================================================
+
 
 class ProcessManager:
     """
@@ -239,9 +239,9 @@ class ProcessManager:
                 self.terminate_process(proc.pid)
 
 
-# ============================================================================
+
 # SCANNER RÉSEAU ROBUSTE - CRITÈRE 3
-# ============================================================================
+
 
 class NetworkScanner:
     """
@@ -421,9 +421,9 @@ class NetworkScanner:
         return client_mac, ap_bssid
 
 
-# ============================================================================
+
 # DÉTECTEUR MODE MONITOR - CRITÈRE 4
-# ============================================================================
+
 
 class MonitorModeDetector:
     """Détection fiable du mode monitor"""
@@ -539,9 +539,9 @@ class MonitorModeDetector:
             logger.warning(f"[MonitorModeDetector] Error disabling monitor: {e}")
 
 
-# ============================================================================
+
 # GESTIONNAIRE DE CHANNEL
-# ============================================================================
+
 
 class ChannelManager:
     """Gestion des channels avec validation"""
@@ -573,9 +573,9 @@ class ChannelManager:
             return False
 
 
-# ============================================================================
+
 # CAPTEUR DE HANDSHAKE AVEC VALIDATION - CRITÈRE 8
-# ============================================================================
+
 
 class HandshakeCapturer:
     """
@@ -817,9 +817,9 @@ class HandshakeCapturer:
         return s[:64]
 
 
-# ============================================================================
+
 # FACTORY ATTAQUES - CRITÈRE 2 & THREADING
-# ============================================================================
+
 
 class AttackFactory:
     """Factory pour les attaques WiFi avec gestion d'erreurs précises"""
@@ -1104,9 +1104,9 @@ server=8.8.8.8
 """
 
 
-# ============================================================================
+
 # CLI MANAGER - CRITÈRE 10
-# ============================================================================
+
 
 class CLIManager:
     """Gestionnaire d'interface CLI avec validation"""
@@ -1249,9 +1249,9 @@ class CLIManager:
         return input(f"{Colors.ORANGE}[?] Choice: {Colors.RESET}").strip()
 
 
-# ============================================================================
+
 # APPLICATION PRINCIPALE
-# ============================================================================
+
 
 class MacFightPro:
     """Application principale"""
