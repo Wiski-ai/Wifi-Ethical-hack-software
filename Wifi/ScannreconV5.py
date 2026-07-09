@@ -68,7 +68,12 @@ class WiFiAutoScanner:
         for i, iface in enumerate(interfaces):
             print(f"{i} : {iface}")
 
-        self.interface = interfaces[int(input("Choix : "))]
+        try:
+            choice = int(input("Choix : "))
+            self.interface = interfaces[choice]
+         except (ValueError, IndexError):
+            logger.error("Choix invalide")
+        return False
 
         return True
 
@@ -267,3 +272,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
