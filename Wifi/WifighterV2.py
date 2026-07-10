@@ -152,7 +152,7 @@ def disable_monitor_mode(mon_iface: str) -> None:
     print(f"[!] monitor mode not stopped automatically for {mon_iface} (per user preference).")
 
 
-# Airodump
+# Airodump-ng scanning
 
 
 def run_airodump(interface: str) -> subprocess.Popen:
@@ -188,7 +188,7 @@ def stop_airodump(proc: subprocess.Popen, timeout: float = 5.0) -> None:
                 pass
 
 
-# Parsing airodump-ng CSV
+# Parsing airodump-ng CSV results
 
 
 def parse_scan_results(filename: str) -> Tuple[List[Dict[str, str]], Dict[str, List[str]]]:
