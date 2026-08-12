@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 from typing import Dict, Set, Optional
 import logging
+import glob
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -71,16 +72,32 @@ class WiFiAutoScanner:
         try:
             choice = int(input("Choix : "))
             self.interface = interfaces[choice]
-         except (ValueError, IndexError):
+        except (ValueError, IndexError):
             logger.error("Choix invalide")
-        return False
+            return False
 
         return True
 
     def get_monitor_interface(self):
-        result = subprocess.run(["iwconfig"], capture_output=True, text=True)
+        # Première tentative: iw dev (plus fiable pour type monitor)
+        result = subprocess.run(["iw", "dev"], capture_output=True, text=True)
+        lines = result.stdout.splitlines()
+        for i, line in enumerate(lines):
+            line_strip = line.strip()
+            if line_strip.startswith("Interface"):
+                parts = line_strip.split()
+                if len(parts) >= 2:
+                    iface = parts[1]
+                    # Chercher 'type monitor' dans les lignes indentées suivantes
+                    j = i + 1
+                    while j < len(lines) and lines[j].startswith("\t"):
+                        if "type monitor" in lines[j]:
+                            return iface
+                        j += 1
 
-        for line in result.stdout.split("\n"):
+        # Fallback: iwconfig (ancien format)
+        result2 = subprocess.run(["iwconfig"], capture_output=True, text=True)
+        for line in result2.stdout.split("\n"):
             if "Mode:Monitor" in line:
                 return line.split()[0]
 
@@ -89,10 +106,12 @@ class WiFiAutoScanner:
     def setup_monitor_mode(self):
         self.run_command(["airmon-ng", "start", self.interface])
 
+        # petit délai pour que l'interface soit créée/renommée
+        time.sleep(1)
+
         self.monitor_interface = self.get_monitor_interface()
 
         return self.monitor_interface is not None
-
 
 
     def load_vendor_database(self):
@@ -129,7 +148,12 @@ class WiFiAutoScanner:
             logger.error(f"Erreur MACVendors: {e}")
 
     def get_vendor(self, mac: str) -> str:
-        return self.vendor_db.get(mac.upper()[:8], "Unknown")
+        # Normaliser et prendre les 3 premiers octets pour la recherche
+        if not mac:
+            return "Unknown"
+        normalized = mac.upper().replace("-", ":")
+        normalized = ":".join(normalized.split(":")[:3])
+        return self.vendor_db.get(normalized, "Unknown")
 
 
 
@@ -137,7 +161,39 @@ class WiFiAutoScanner:
         with open(self.csv_file, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(self.CSV_HEADERS)
 
-
+    def cleanup_temp_files(self):
+        """
+        Supprime les fichiers temporaires produits par airodump-ng du précédent run,
+        pour éviter de relire d'anciens CSV quand on relance le scan.
+        Exemples de fichiers: temp_scan-01.csv, temp_scan-01.kismet.csv, temp_scan-01.cap, ...
+        """
+        base = self.temp_csv.name  # 'temp_scan'
+        cwd = Path.cwd()
+        patterns = [f"{base}-*", f"{base}*"]
+        removed = 0
+        for patt in patterns:
+            for p in cwd.glob(patt):
+                # Sécurité: n'effacer que les fichiers commençant par base
+                if p.name.startswith(base):
+                    try:
+                        if p.is_file():
+                            p.unlink()
+                            removed += 1
+                        else:
+                            # pour dossiers éventuels (rare)
+                            try:
+                                if p.is_dir():
+                                    for sub in p.iterdir():
+                                        if sub.is_file():
+                                            sub.unlink()
+                                    p.rmdir()
+                                    removed += 1
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Impossible de supprimer {p}: {e}")
+        if removed:
+            logger.info(f"Suppression de {removed} anciens fichiers temporaires '{base}*'")
 
     def parse_airodump_csv(self) -> Dict[str, Dict]:
         result = {}
@@ -163,6 +219,7 @@ class WiFiAutoScanner:
                 continue
 
             if not in_stations:
+                # la section réseaux (BSS)
                 if len(row) < 14:
                     continue
 
@@ -214,8 +271,13 @@ class WiFiAutoScanner:
 
     def scan(self):
 
+        # réinitialise le csv d'export (écrase l'ancien wifi_scan_results.csv)
         self.init_csv()
 
+        # supprime d'anciens fichiers temporaires pour éviter de relire du vieux CSV
+        self.cleanup_temp_files()
+
+        # Lancer airodump-ng
         self.airodump_process = subprocess.Popen([
             "airodump-ng",
             "--band", "abg",
@@ -245,7 +307,14 @@ class WiFiAutoScanner:
         print("\nNettoyage...")
 
         if self.airodump_process:
-            self.airodump_process.terminate()
+            try:
+                self.airodump_process.terminate()
+                # optionnel : attendre un peu et forcer kill si nécessaire
+                time.sleep(0.5)
+                if self.airodump_process.poll() is None:
+                    self.airodump_process.kill()
+            except Exception:
+                pass
 
         if self.monitor_interface:
             self.run_command(["airmon-ng", "stop", self.monitor_interface])
@@ -272,4 +341,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
